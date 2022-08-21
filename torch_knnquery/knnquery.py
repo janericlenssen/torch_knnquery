@@ -27,8 +27,56 @@ class VoxelGrid(object):
         self.get_shadingloc = getattr(knnquery_cuda, 'get_shadingloc')
         self.query_along_ray = getattr(knnquery_cuda, 'query_along_ray_layered')
         
-    def insert_points(self, points):
+
+    def get_hyperparameters(self, vsize_np, point_xyz_w_tensor, ranges=None):
+        '''
+        :param l:
+        :param h:
+        :param w:
+        :param zdim:
+        :param ydim:
+        :param xdim:
+        :return:
+        '''
+        min_xyz, max_xyz = torch.min(point_xyz_w_tensor, dim=-2)[0][0], torch.max(point_xyz_w_tensor, dim=-2)[0][0]
+        vscale_np = np.array(self.opt.vscale, dtype=np.int32)
+        scaled_vsize_np = (vsize_np * vscale_np).astype(np.float32)
+        if ranges is not None:
+            # print("min_xyz", min_xyz.shape)
+            # print("max_xyz", max_xyz.shape)
+            # print("ranges", ranges)
+            min_xyz, max_xyz = torch.max(torch.stack([min_xyz, torch.as_tensor(ranges[:3], dtype=torch.float32, device=min_xyz.device)], dim=0), dim=0)[0], torch.min(torch.stack([max_xyz, torch.as_tensor(ranges[3:], dtype=torch.float32,  device=min_xyz.device)], dim=0), dim=0)[0]
+        min_xyz = min_xyz - torch.as_tensor(scaled_vsize_np * self.opt.kernel_size / 2, device=min_xyz.device, dtype=torch.float32)
+        max_xyz = max_xyz + torch.as_tensor(scaled_vsize_np * self.opt.kernel_size / 2, device=min_xyz.device, dtype=torch.float32)
+
+        ranges_np = torch.cat([min_xyz, max_xyz], dim=-1).cpu().numpy().astype(np.float32)
+        # print("ranges_np",ranges_np)
+        vdim_np = (max_xyz - min_xyz).cpu().numpy() / vsize_np
+
+        scaled_vdim_np = np.ceil(vdim_np / vscale_np).astype(np.int32)
+        ranges_gpu, scaled_vsize_gpu, scaled_vdim_gpu, vscale_gpu, kernel_size_gpu, query_size_gpu = np_to_gpuarray(
+            ranges_np, scaled_vsize_np, scaled_vdim_np, vscale_np, np.asarray(self.opt.kernel_size, dtype=np.int32),
+            np.asarray(self.opt.query_size, dtype=np.int32))
+
+        radius_limit_np, depth_limit_np = self.opt.radius_limit_scale * max(vsize_np[0], vsize_np[1]), self.opt.depth_limit_scale * vsize_np[2]
+        return np.asarray(radius_limit_np).astype(np.float32), np.asarray(depth_limit_np).astype(np.float32), ranges_np, vsize_np, vdim_np, scaled_vsize_np, scaled_vdim_np, vscale_np, ranges_gpu, scaled_vsize_gpu, scaled_vdim_gpu, vscale_gpu, kernel_size_gpu, query_size_gpu
+
+
+    def insert_points(self, points, actual_num_points_per_batch):
+        
+        near_depth, far_depth = np.asarray(near_depth).item() , np.asarray(far_depth).item()
+        radius_limit_np, depth_limit_np, ranges_np, vsize_np, vdim_np, scaled_vsize_np, scaled_vdim_np, vscale_np, range_gpu, scaled_vsize_gpu, scaled_vdim_gpu, vscale_gpu, kernel_size_gpu, query_size_gpu = self.get_hyperparameters(self.opt.vsize, point_xyz_w_tensor, ranges=self.opt.ranges)
+
         device = points.device
+        kMaxThreadsPerBlock = 1024
+        B, N = points.size(0), points.size(1)
+        pixel_size = scaled_vdim_np[0] * scaled_vdim_np[1]
+        grid_size_vol = pixel_size * scaled_vdim_np[2]
+        d_coord_shift = ranges_gpu[:3]
+        R, D = raypos_tensor.shape[1], raypos_tensor.shape[2]
+        R = pixel_idx_tensor.reshape(B, -1, 2).shape[1]
+        gridSize = int((B * N + kMaxThreadsPerBlock - 1) / kMaxThreadsPerBlock)
+8
         B = points.size(0)
         coor_occ_tensor = torch.zeros([B, scaled_vdim_np[0], scaled_vdim_np[1], scaled_vdim_np[2]], dtype=torch.int32, device=device)
         occ_2_pnts_tensor = torch.full([B, max_o, P], -1, dtype=torch.int32, device=device)
@@ -39,10 +87,10 @@ class VoxelGrid(object):
         seconds = time.time()
 
         self.claim_occ(
-            Holder(point_xyz_w_tensor),
-            Holder(actual_numpoints_tensor),
-            np.int32(B),
-            np.int32(N),
+            points,
+            actual_num_points_per_batch,
+            B,
+            N,
             d_coord_shift,
             scaled_vsize_gpu,
             scaled_vdim_gpu,
