@@ -126,7 +126,7 @@ namespace cu_cuda {
     }
 }
 
-__global__ void get_occ_vox(
+__global__ void claim_occ(
     const float* in_data,   // B * N * 3
     const int* in_actual_numpoints, // B 
     const int B,
@@ -134,14 +134,12 @@ __global__ void get_occ_vox(
     const float *d_coord_shift,     // 3
     const float *d_voxel_size,      // 3
     const int *d_grid_size,       // 3
-    const int *kernel_size,       // 3
-    const int pixel_size,
     const int grid_size_vol,
-    uint8_t *coor_occ,  // B * 400 * 400 * 400
-    int8_t *loc_coor_counter,  // B * 400 * 400 * 400
-    int *near_depth_id_tensor,  // B * 400 * 400
-    int *far_depth_id_tensor,  // B * 400 * 400 
-    const int inverse
+    const int max_o,
+    int* occ_idx, // B, all 0
+    int *coor_2_occ,  // B * 400 * 400 * 400, all -1
+    int *occ_2_coor,  // B * max_o * 3, all -1
+    unsigned long seconds
 ) {
     int index = blockIdx.x * blockDim.x + threadIdx.x; // index of gpu thread
     int i_batch = index / N;  // index of batch
@@ -150,212 +148,183 @@ __global__ void get_occ_vox(
     if (i_pt < in_actual_numpoints[i_batch]) {
         int coor[3];
         const float *p_pt = in_data + index * 3;
-        coor[0] = floor((p_pt[0] - d_coord_shift[0]) / d_voxel_size[0]);
-        if (coor[0] < 0 || coor[0] >= d_grid_size[0]) { return; }
-        coor[1] = floor((p_pt[1] - d_coord_shift[1]) / d_voxel_size[1]);
-        if (coor[1] < 0 || coor[1] >= d_grid_size[1]) { return; }
-        float z = p_pt[2];
-        if (inverse > 0){ z = 1.0 / z;}
-        coor[2] = floor((z - d_coord_shift[2]) / d_voxel_size[2]);
-        if (coor[2] < 0 || coor[2] >= d_grid_size[2]) { return; }
+        coor[0] = (int) floor((p_pt[0] - d_coord_shift[0]) / d_voxel_size[0]);
+        coor[1] = (int) floor((p_pt[1] - d_coord_shift[1]) / d_voxel_size[1]);
+        coor[2] = (int) floor((p_pt[2] - d_coord_shift[2]) / d_voxel_size[2]);
+        // printf("p_pt %f %f %f %f; ", p_pt[2], d_coord_shift[2], d_coord_shift[0], d_coord_shift[1]);
+        if (coor[0] < 0 || coor[0] >= d_grid_size[0] || coor[1] < 0 || coor[1] >= d_grid_size[1] || coor[2] < 0 || coor[2] >= d_grid_size[2]) { return; }
+        int coor_indx_b = i_batch * grid_size_vol + coor[0] * (d_grid_size[1] * d_grid_size[2]) + coor[1] * d_grid_size[2] + coor[2];
         
-        int frust_id_b, coor_indx_b = i_batch * grid_size_vol + coor[0] * (d_grid_size[1] * d_grid_size[2]) + coor[1] * d_grid_size[2] + coor[2];
-        if (loc_coor_counter[coor_indx_b] < (int8_t)0 || cu_cuda::atomicAdd(loc_coor_counter + coor_indx_b, (int8_t)-1) < (int8_t)0) { return; }
+        int voxel_idx = coor_2_occ[coor_indx_b];
+        if (voxel_idx == -1) {  // found an empty voxel
+            int old_voxel_num = atomicCAS(
+                    &coor_2_occ[coor_indx_b],
+                    -1, 0
+            );
+            if (old_voxel_num == -1) {
+                // CAS -> old val, if old val is -1
+                // if we get -1, this thread is the one who obtain a new voxel
+                // so only this thread should do the increase operator below
+                int tmp = atomicAdd(occ_idx+i_batch, 1); // increase the counter, return old counter
+                    // increase the counter, return old counter
+                if (tmp < max_o) {
+                    int coord_inds = (i_batch * max_o + tmp) * 3;
+                    occ_2_coor[coord_inds] = coor[0];
+                    occ_2_coor[coord_inds + 1] = coor[1];
+                    occ_2_coor[coord_inds + 2] = coor[2];
+                } else {
+                    curandState state;
+                    curand_init(index+2*seconds, 0, 0, &state);
+                    int insrtidx = ceilf(curand_uniform(&state) * (tmp+1)) - 1;
+                    if(insrtidx < max_o){
+                        int coord_inds = (i_batch * max_o + insrtidx) * 3;
+                        occ_2_coor[coord_inds] = coor[0];
+                        occ_2_coor[coord_inds + 1] = coor[1];
+                        occ_2_coor[coord_inds + 2] = coor[2];
+                    }
+                }
+            }
+        }
+    }
+}
 
+__global__ void map_coor2occ(
+    const int B,
+    const int *d_grid_size,       // 3
+    const int *kernel_size,       // 3
+    const int grid_size_vol,
+    const int max_o,
+    int* occ_idx, // B, all -1
+    int *coor_occ,  // B * 400 * 400 * 400
+    int *coor_2_occ,  // B * 400 * 400 * 400
+    int *occ_2_coor  // B * max_o * 3
+) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x; // index of gpu thread
+    int i_batch = index / max_o;  // index of batch
+    if (i_batch >= B) { return; }
+    int i_pt = index - max_o * i_batch;
+    if (i_pt < occ_idx[i_batch] && i_pt < max_o) {
+        int coor[3];
+        coor[0] = occ_2_coor[index*3];
+        if (coor[0] < 0) { return; }
+        coor[1] = occ_2_coor[index*3+1];
+        coor[2] = occ_2_coor[index*3+2];
+        
+        int coor_indx_b = i_batch * grid_size_vol + coor[0] * (d_grid_size[1] * d_grid_size[2]) + coor[1] * d_grid_size[2] + coor[2];
+        coor_2_occ[coor_indx_b] = i_pt;
+        // printf("kernel_size[0] %d", kernel_size[0]);
         for (int coor_x = max(0, coor[0] - kernel_size[0] / 2) ; coor_x < min(d_grid_size[0], coor[0] + (kernel_size[0] + 1) / 2); coor_x++)    {
             for (int coor_y = max(0, coor[1] - kernel_size[1] / 2) ; coor_y < min(d_grid_size[1], coor[1] + (kernel_size[1] + 1) / 2); coor_y++)   {
                 for (int coor_z = max(0, coor[2] - kernel_size[2] / 2) ; coor_z < min(d_grid_size[2], coor[2] + (kernel_size[2] + 1) / 2); coor_z++) {
-                    frust_id_b = i_batch * pixel_size + coor_x * d_grid_size[1] + coor_y;
                     coor_indx_b = i_batch * grid_size_vol + coor_x * (d_grid_size[1] * d_grid_size[2]) + coor_y * d_grid_size[2] + coor_z;
-                    if (coor_occ[coor_indx_b] > (uint8_t)0) { continue; }
-                    cu_cuda::atomicCAS(coor_occ + coor_indx_b, (uint8_t)0, (uint8_t)1);
-                    atomicMin(near_depth_id_tensor + frust_id_b, coor_z);
-                    atomicMax(far_depth_id_tensor + frust_id_b, coor_z);
+                    if (coor_occ[coor_indx_b] > 0) { continue; }
+                    atomicCAS(coor_occ + coor_indx_b, 0, 1);
                 }
             }
         }   
     }
 }
 
-__global__ void near_vox_full(
-    const int B,
-    const int SR,
-    const int *pixel_idx,
-    const int R,
-    const int *vscale,
-    const int *d_grid_size,
-    const int pixel_size,
-    const int grid_size_vol,
-    const int *kernel_size,      // 3
-    uint8_t *pixel_map,
-    int8_t *ray_mask,     // B * R
-    const uint8_t *coor_occ,  // B * 400 * 400 * 400
-    int8_t *loc_coor_counter,    // B * 400 * 400 * 400
-    const int *near_depth_id_tensor,  // B * 400 * 400
-    const int *far_depth_id_tensor,  // B * 400 * 400 
-    short *voxel_to_coorz_idx  // B * 400 * 400 * SR 
-) {
-    int index = blockIdx.x * blockDim.x + threadIdx.x; // index of gpu thread
-    int i_batch = index / R;  // index of batch
-    if (i_batch >= B) { return; }
-    int vx_id = pixel_idx[index*2] / vscale[0], vy_id = pixel_idx[index*2 + 1] / vscale[1];
-    int i_xyvox_id = i_batch * pixel_size + vx_id * d_grid_size[1] + vy_id;
-    int near_id = near_depth_id_tensor[i_xyvox_id], far_id = far_depth_id_tensor[i_xyvox_id];
-    ray_mask[index] = far_id > 0 ? (int8_t)1 : (int8_t)0;
-    if (pixel_map[i_xyvox_id] > (uint8_t)0 || cu_cuda::atomicCAS(pixel_map + i_xyvox_id, (uint8_t)0, (uint8_t)1) > (uint8_t)0) { return; }
-    int counter = 0;
-    for (int depth_id = near_id; depth_id <= far_id; depth_id++) {
-        if (coor_occ[i_xyvox_id * d_grid_size[2] + depth_id] > (uint8_t)0) {
-            voxel_to_coorz_idx[i_xyvox_id * SR + counter] = (short)depth_id;
-            // if (i_xyvox_id>81920){
-            //    printf("   %d %d %d %d %d %d %d %d %d %d    ", pixel_idx[index*2], vscale[0], i_batch, vx_id, vy_id, i_xyvox_id * SR + counter, i_xyvox_id, SR, counter, d_grid_size[1]);
-            // }
-            for (int coor_x = max(0, vx_id - kernel_size[0] / 2) ; coor_x < min(d_grid_size[0], vx_id + (kernel_size[0] + 1) / 2); coor_x++)  {
-                for (int coor_y = max(0, vy_id - kernel_size[1] / 2) ; coor_y < min(d_grid_size[1], vy_id + (kernel_size[1] + 1) / 2); coor_y++)   {
-                    for (int coor_z = max(0, depth_id - kernel_size[2] / 2) ; coor_z < min(d_grid_size[2], depth_id + (kernel_size[2] + 1) / 2); coor_z++)    {
-                        int coor_indx_b = i_batch * grid_size_vol + coor_x * (d_grid_size[1] * d_grid_size[2]) + coor_y * d_grid_size[2] + coor_z;
-                        // cuda::atomicCAS(loc_coor_counter + coor_indx_b, (int8_t)-1, (int8_t)1);
-                        int8_t loc = loc_coor_counter[coor_indx_b];
-                        if (loc < (int8_t)0) {
-                            loc_coor_counter[coor_indx_b] = (int8_t)1;
-                        }
-                    }
-                }
-            }
-            if (counter >= SR - 1) { return; }
-            counter += 1;
-        }
-    }
-}
-
-
-__global__ void insert_vox_points(        
-    float* in_data,   // B * N * 3
-    int* in_actual_numpoints, // B 
+__global__ void fill_occ2pnts(
+    const float* in_data,   // B * N * 3
+    const int* in_actual_numpoints, // B 
     const int B,
     const int N,
     const int P,
-    const int max_o,
-    const int pixel_size,
-    const int grid_size_vol,
     const float *d_coord_shift,     // 3
-    const int *d_grid_size,
     const float *d_voxel_size,      // 3
-    const int8_t *loc_coor_counter,    // B * 400 * 400 * 400
-    short *voxel_pnt_counter,      // B * 400 * 400 * max_o 
-    int *voxel_to_pntidx,      // B * pixel_size * max_o * P
-    unsigned long seconds,
-    const int inverse
+    const int *d_grid_size,       // 3
+    const int grid_size_vol,
+    const int max_o,
+    int *coor_2_occ,  // B * 400 * 400 * 400, all -1
+    int *occ_2_pnts,  // B * max_o * P, all -1
+    int *occ_numpnts,  // B * max_o, all 0
+    unsigned long seconds
 ) {
     int index = blockIdx.x * blockDim.x + threadIdx.x; // index of gpu thread
     int i_batch = index / N;  // index of batch
     if (i_batch >= B) { return; }
-    if (index - i_batch * N < in_actual_numpoints[i_batch]) {
+    int i_pt = index - N * i_batch;
+    if (i_pt < in_actual_numpoints[i_batch]) {
+        int coor[3];
         const float *p_pt = in_data + index * 3;
-        int coor_x = (p_pt[0] - d_coord_shift[0]) / d_voxel_size[0];
-        int coor_y = (p_pt[1] - d_coord_shift[1]) / d_voxel_size[1];
-        float z = p_pt[2];
-        if (inverse > 0){ z = 1.0 / z;}
-        int coor_z = (z - d_coord_shift[2]) / d_voxel_size[2];
-        int pixel_indx_b = i_batch * pixel_size  + coor_x * d_grid_size[1] + coor_y;
-        int coor_indx_b = pixel_indx_b * d_grid_size[2] + coor_z;
-        if (coor_x < 0 || coor_x >= d_grid_size[0] || coor_y < 0 || coor_y >= d_grid_size[1] || coor_z < 0 || coor_z >= d_grid_size[2] || loc_coor_counter[coor_indx_b] < (int8_t)0) { return; }
-        int voxel_indx_b = pixel_indx_b * max_o + (int)loc_coor_counter[coor_indx_b];
-        //printf("voxel_indx_b, %d  ||   ", voxel_indx_b);
-        int voxel_pntid = (int) cu_cuda::atomicAdd(voxel_pnt_counter + voxel_indx_b, (short)1);
-        if (voxel_pntid < P) {
-            voxel_to_pntidx[voxel_indx_b * P + voxel_pntid] = index;
-        } else {
-            curandState state;
-            curand_init(index+seconds, 0, 0, &state);
-            int insrtidx = ceilf(curand_uniform(&state) * (voxel_pntid+1)) - 1;
-            if(insrtidx < P){
-                voxel_to_pntidx[voxel_indx_b * P + insrtidx] = index;
-            }
-        }
-    }
-}                        
-
-
-__global__ void query_rand_along_ray(
-    const float* in_data,   // B * N * 3
-    const int B,
-    const int SR,               // num. samples along each ray e.g., 128
-    const int R,               // e.g., 1024
-    const int max_o,
-    const int P,
-    const int K,                // num.  neighbors
-    const int pixel_size,                
-    const int grid_size_vol,
-    const float radius_limit2,
-    const float depth_limit2,
-    const float *d_coord_shift,     // 3
-    const int *d_grid_size,
-    const float *d_voxel_size,      // 3
-    const float *d_ray_voxel_size,      // 3
-    const int *vscale,      // 3
-    const int *kernel_size,
-    const int *pixel_idx,               // B * R * 2
-    const int8_t *loc_coor_counter,    // B * 400 * 400 * 400
-    const short *voxel_to_coorz_idx,            // B * 400 * 400 * SR 
-    const short *voxel_pnt_counter,      // B * 400 * 400 * max_o 
-    const int *voxel_to_pntidx,      // B * pixel_size * max_o * P
-    int *sample_pidx,       // B * R * SR * K
-    float *sample_loc,       // B * R * SR * K
-    unsigned long seconds,
-    const int NN,
-    const int inverse
-) {
-    int index =  blockIdx.x * blockDim.x + threadIdx.x; // index of gpu thread
-    int i_batch = index / (R * SR);  // index of batch
-    int ray_idx_b = index / SR;  
-    if (i_batch >= B || ray_idx_b >= B * R) { return; }
-
-    int ray_sample_loc_idx = index - ray_idx_b * SR;
-    int frustx = pixel_idx[ray_idx_b * 2] / vscale[0];
-    int frusty = pixel_idx[ray_idx_b * 2 + 1] / vscale[1];
-    int vxy_ind_b = i_batch * pixel_size + frustx * d_grid_size[1] + frusty;
-    int frustz = (int) voxel_to_coorz_idx[vxy_ind_b * SR + ray_sample_loc_idx];
-    float centerx = d_coord_shift[0] + frustx * d_voxel_size[0] + (pixel_idx[ray_idx_b * 2] % vscale[0] + 0.5) * d_ray_voxel_size[0];
-    float centery = d_coord_shift[1] + frusty * d_voxel_size[1] + (pixel_idx[ray_idx_b * 2 + 1] % vscale[1] + 0.5) * d_ray_voxel_size[1];
-    float centerz = d_coord_shift[2] + (frustz + 0.5) * d_voxel_size[2];
-    if (inverse > 0){ centerz = 1.0 / centerz;}
-    sample_loc[index * 3] = centerx;
-    sample_loc[index * 3 + 1] = centery;
-    sample_loc[index * 3 + 2] = centerz;
-    if (frustz < 0) { return; }
-    int coor_indx_b = vxy_ind_b * d_grid_size[2] + frustz;
-    int raysample_startid = index * K;
-    int kid = 0;
-    curandState state;
-    for (int coor_x = max(0, frustx - kernel_size[0] / 2) ; coor_x < min(d_grid_size[0], frustx + (kernel_size[0] + 1) / 2); coor_x++) {
-        for (int coor_y = max(0, frusty - kernel_size[1] / 2) ; coor_y < min(d_grid_size[1], frusty + (kernel_size[1] + 1) / 2); coor_y++) {
-            int pixel_indx_b = i_batch * pixel_size  + coor_x * d_grid_size[1] + coor_y;
-            for (int coor_z = max(0, frustz - kernel_size[2] / 2) ; coor_z < min(d_grid_size[2], frustz + (kernel_size[2] + 1) / 2); coor_z++) {
-                int shift_coor_indx_b = pixel_indx_b * d_grid_size[2] + coor_z;
-                if(loc_coor_counter[shift_coor_indx_b] < (int8_t)0) {continue;}
-                int voxel_indx_b = pixel_indx_b * max_o + (int)loc_coor_counter[shift_coor_indx_b];
-                for (int g = 0; g < min(P, (int) voxel_pnt_counter[voxel_indx_b]); g++) {
-                    int pidx = voxel_to_pntidx[voxel_indx_b * P + g];
-                    if ((radius_limit2 == 0 || (in_data[pidx*3]-centerx) * (in_data[pidx*3]-centerx) + (in_data[pidx*3 + 1]-centery) * (in_data[pidx*3 + 1]-centery) <= radius_limit2) && (depth_limit2==0 || (in_data[pidx*3 + 2]-centerz) * (in_data[pidx*3 + 2]-centerz) <= depth_limit2)) { 
-                        if (kid++ < K) {
-                            sample_pidx[raysample_startid + kid - 1] = pidx;
-                        }
-                        else {
-                            curand_init(index+seconds, 0, 0, &state);
-                            int insrtidx = ceilf(curand_uniform(&state) * (kid)) - 1;
-                            if (insrtidx < K) {
-                                sample_pidx[raysample_startid + insrtidx] = pidx;
-                            }
-                        }
-                    }
+        coor[0] = (int) floor((p_pt[0] - d_coord_shift[0]) / d_voxel_size[0]);
+        coor[1] = (int) floor((p_pt[1] - d_coord_shift[1]) / d_voxel_size[1]);
+        coor[2] = (int) floor((p_pt[2] - d_coord_shift[2]) / d_voxel_size[2]);
+        if (coor[0] < 0 || coor[0] >= d_grid_size[0] || coor[1] < 0 || coor[1] >= d_grid_size[1] || coor[2] < 0 || coor[2] >= d_grid_size[2]) { return; }
+        int coor_indx_b = i_batch * grid_size_vol + coor[0] * (d_grid_size[1] * d_grid_size[2]) + coor[1] * d_grid_size[2] + coor[2];
+        
+        int voxel_idx = coor_2_occ[coor_indx_b];
+        if (voxel_idx > 0) {  // found an claimed coor2occ
+            int occ_indx_b = i_batch * max_o + voxel_idx;
+            int tmp = atomicAdd(occ_numpnts + occ_indx_b, 1); // increase the counter, return old counter
+            if (tmp < P) {
+                occ_2_pnts[occ_indx_b * P + tmp] = i_pt;
+            } else {
+                curandState state;
+                curand_init(index+2*seconds, 0, 0, &state);
+                int insrtidx = ceilf(curand_uniform(&state) * (tmp+1)) - 1;
+                if(insrtidx < P){
+                    occ_2_pnts[occ_indx_b * P + insrtidx] = i_pt;
                 }
             }
         }
     }
 }
-    
-    
+
+            
+__global__ void mask_raypos(
+    float *raypos,    // [B, 2048, 400, 3]
+    int *coor_occ,    // B * 400 * 400 * 400
+    const int B,       // 3
+    const int R,       // 3
+    const int D,       // 3
+    const int grid_size_vol,
+    const float *d_coord_shift,     // 3
+    const int *d_grid_size,       // 3
+    const float *d_voxel_size,      // 3
+    int *raypos_mask    // B, R, D
+) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x; // index of gpu thread
+    int i_batch = index / (R * D);  // index of batch
+    if (i_batch >= B) { return; }
+    int coor[3];
+    coor[0] = (int) floor((raypos[index*3] - d_coord_shift[0]) / d_voxel_size[0]);
+    coor[1] = (int) floor((raypos[index*3+1] - d_coord_shift[1]) / d_voxel_size[1]);
+    coor[2] = (int) floor((raypos[index*3+2] - d_coord_shift[2]) / d_voxel_size[2]);
+    // printf(" %f %f %f;", raypos[index*3], raypos[index*3+1], raypos[index*3+2]);
+    if ((coor[0] >= 0) && (coor[0] < d_grid_size[0]) && (coor[1] >= 0) && (coor[1] < d_grid_size[1]) && (coor[2] >= 0) && (coor[2] < d_grid_size[2])) { 
+        int coor_indx_b = i_batch * grid_size_vol + coor[0] * (d_grid_size[1] * d_grid_size[2]) + coor[1] * d_grid_size[2] + coor[2];
+        raypos_mask[index] = coor_occ[coor_indx_b];
+    }
+}
+
+
+__global__ void get_shadingloc(
+    const float *raypos,    // [B, 2048, 400, 3]
+    const int *raypos_mask,    // B, R, D
+    const int B,       // 3
+    const int R,       // 3
+    const int D,       // 3
+    const int SR,       // 3
+    float *sample_loc,       // B * R * SR * 3
+    int *sample_loc_mask       // B * R * SR
+) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x; // index of gpu thread
+    int i_batch = index / (R * D);  // index of batch
+    if (i_batch >= B) { return; }
+    int temp = raypos_mask[index];
+    if (temp >= 0) {
+        int r = (index - i_batch * R * D) / D;
+        int loc_inds = i_batch * R * SR + r * SR + temp;
+        sample_loc[loc_inds * 3] = raypos[index * 3];
+        sample_loc[loc_inds * 3 + 1] = raypos[index * 3 + 1];
+        sample_loc[loc_inds * 3 + 2] = raypos[index * 3 + 2];
+        sample_loc_mask[loc_inds] = 1;
+    }
+}
+
+
 __global__ void query_neigh_along_ray_layered(
     const float* in_data,   // B * N * 3
     const int B,
@@ -364,101 +333,83 @@ __global__ void query_neigh_along_ray_layered(
     const int max_o,
     const int P,
     const int K,                // num.  neighbors
-    const int pixel_size,                
     const int grid_size_vol,
     const float radius_limit2,
-    const float depth_limit2,
     const float *d_coord_shift,     // 3
     const int *d_grid_size,
     const float *d_voxel_size,      // 3
-    const float *d_ray_voxel_size,      // 3
-    const int *vscale,      // 3
     const int *kernel_size,
-    const int *pixel_idx,               // B * R * 2
-    const int8_t *loc_coor_counter,    // B * 400 * 400 * 400
-    const short *voxel_to_coorz_idx,            // B * 400 * 400 * SR 
-    const short *voxel_pnt_counter,      // B * 400 * 400 * max_o 
-    const int *voxel_to_pntidx,      // B * pixel_size * max_o * P
+    const int *occ_numpnts,    // B * max_o
+    const int *occ_2_pnts,            // B * max_o * P
+    const int *coor_2_occ,      // B * 400 * 400 * 400 
+    const float *sample_loc,       // B * R * SR * 3
+    const int *sample_loc_mask,       // B * R * SR
     int *sample_pidx,       // B * R * SR * K
-    float *sample_loc,       // B * R * SR * K
     unsigned long seconds,
-    const int NN,
-    const int inverse
+    const int NN
 ) {
     int index =  blockIdx.x * blockDim.x + threadIdx.x; // index of gpu thread
     int i_batch = index / (R * SR);  // index of batch
-    int ray_idx_b = index / SR;  
-    if (i_batch >= B || ray_idx_b >= B * R) { return; }
-
-    int ray_sample_loc_idx = index - ray_idx_b * SR;
-    int frustx = pixel_idx[ray_idx_b * 2] / vscale[0];
-    int frusty = pixel_idx[ray_idx_b * 2 + 1] / vscale[1];
-    int vxy_ind_b = i_batch * pixel_size + frustx * d_grid_size[1] + frusty;
-    int frustz = (int) voxel_to_coorz_idx[vxy_ind_b * SR + ray_sample_loc_idx];
-    float centerx = d_coord_shift[0] + frustx * d_voxel_size[0] + (pixel_idx[ray_idx_b * 2] % vscale[0] + 0.5) * d_ray_voxel_size[0];
-    float centery = d_coord_shift[1] + frusty * d_voxel_size[1] + (pixel_idx[ray_idx_b * 2 + 1] % vscale[1] + 0.5) * d_ray_voxel_size[1];
-    float centerz = d_coord_shift[2] + (frustz + 0.5) * d_voxel_size[2];
-    if (inverse > 0){ centerz = 1.0 / centerz;}
-    sample_loc[index * 3] = centerx;
-    sample_loc[index * 3 + 1] = centery;
-    sample_loc[index * 3 + 2] = centerz;
-    if (frustz < 0) { return; }
-    // int coor_indx_b = vxy_ind_b * d_grid_size[2] + frustz;
-    int raysample_startid = index * K;
-    // curandState state;
-    
+    if (i_batch >= B || sample_loc_mask[index] <= 0) { return; }
+    float centerx = sample_loc[index * 3];
+    float centery = sample_loc[index * 3 + 1];
+    float centerz = sample_loc[index * 3 + 2];
+    int frustx = (int) floor((centerx - d_coord_shift[0]) / d_voxel_size[0]);
+    int frusty = (int) floor((centery - d_coord_shift[1]) / d_voxel_size[1]);
+    int frustz = (int) floor((centerz - d_coord_shift[2]) / d_voxel_size[2]);
+                        
+    centerx = sample_loc[index * 3];
+    centery = sample_loc[index * 3 + 1];
+    centerz = sample_loc[index * 3 + 2];
+                        
     int kid = 0, far_ind = 0, coor_z, coor_y, coor_x;
     float far2 = 0.0;
     float xyz2Buffer[KN];
-    for (int layer = 0; layer < (kernel_size[0]+1)/2; layer++){
-        int zlayer = min((kernel_size[2]+1)/2-1, layer);
-        
-        for (int x = max(-frustx, -layer); x < min(d_grid_size[0] - frustx, layer+1); x++) {
-            for (int y = max(-frusty, -layer); y < min(d_grid_size[1] - frusty, layer+1); y++) {                              
+    for (int layer = 0; layer < (kernel_size[0]+1)/2; layer++){                        
+        for (int x = max(-frustx, -layer); x < min(d_grid_size[0] - frustx, layer + 1); x++) {
+            coor_x = frustx + x;
+            for (int y = max(-frusty, -layer); y < min(d_grid_size[1] - frusty, layer + 1); y++) {
                 coor_y = frusty + y;
-                coor_x = frustx + x;
-                int pixel_indx_b = i_batch * pixel_size  + coor_x * d_grid_size[1] + coor_y;
-                for (int z =  max(-frustz, -zlayer); z < min(d_grid_size[2] - frustz, zlayer + 1); z++) {
-                    //  if (max(abs(x),abs(y)) != layer || abs(z) != zlayer) continue;
-                    if (max(abs(x),abs(y)) != layer && ((zlayer == layer) ? (abs(z) != zlayer) : 1)) continue;
-                    // if (max(abs(x),abs(y)) != layer) continue;
+                for (int z =  max(-frustz, -layer); z < min(d_grid_size[2] - frustz, layer + 1); z++) {
                     coor_z = z + frustz;
-                    
-                    int shift_coor_indx_b = pixel_indx_b * d_grid_size[2] + coor_z;
-                    if(loc_coor_counter[shift_coor_indx_b] < (int8_t)0) {continue;}
-                    int voxel_indx_b = pixel_indx_b * max_o + (int)loc_coor_counter[shift_coor_indx_b];                  
-                    for (int g = 0; g < min(P, (int) voxel_pnt_counter[voxel_indx_b]); g++) {
-                        int pidx = voxel_to_pntidx[voxel_indx_b * P + g];
-                        float x_v = (NN < 2) ? (in_data[pidx*3]-centerx) : (in_data[pidx*3] * in_data[pidx*3+2]-centerx*centerz) ;
-                        float y_v = (NN < 2) ? (in_data[pidx*3+1]-centery) : (in_data[pidx*3+1] * in_data[pidx*3+2]-centery*centerz) ;
-                        float xy2 = x_v * x_v + y_v * y_v;
-                        float z2 = (in_data[pidx*3 + 2]-centerz) * (in_data[pidx*3 + 2]-centerz);
-                        float xyz2 = xy2 + z2;
-                        if ((radius_limit2 == 0 || xy2 <= radius_limit2) && (depth_limit2==0 || z2 <= depth_limit2)){
-                            if (kid++ < K) {
-                                sample_pidx[raysample_startid + kid - 1] = pidx;
-                                xyz2Buffer[kid-1] = xyz2;
-                                if (xyz2 > far2){
-                                    far2 = xyz2;
-                                    far_ind = kid - 1;
-                                }
-                            } else {
-                                if (xyz2 < far2) {
-                                    sample_pidx[raysample_startid + far_ind] = pidx;
-                                    xyz2Buffer[far_ind] = xyz2;
-                                    far2 = xyz2;
-                                    for (int i = 0; i < K; i++) {
-                                        if (xyz2Buffer[i] > far2) {
-                                            far2 = xyz2Buffer[i];
-                                            far_ind = i;
-                                        }
+                    if (max(abs(z), max(abs(x), abs(y))) != layer) continue;
+                    int coor_indx_b = i_batch * grid_size_vol + coor_x * (d_grid_size[1] * d_grid_size[2]) + coor_y * d_grid_size[2] + coor_z;
+                    int occ_indx = coor_2_occ[coor_indx_b] + i_batch * max_o;
+                    if (occ_indx >= 0) {
+                        for (int g = 0; g < min(P, occ_numpnts[occ_indx]); g++) {
+                            int pidx = occ_2_pnts[occ_indx * P + g];
+                            float x_v = (in_data[pidx*3]-centerx);
+                            float y_v = (in_data[pidx*3 + 1]-centery);
+                            float z_v = (in_data[pidx*3 + 2]-centerz);
+                            float xyz2 = x_v * x_v + y_v * y_v + z_v * z_v;
+                            if ((radius_limit2 == 0 || xyz2 <= radius_limit2)){
+                                if (kid++ < K) {
+                                    sample_pidx[index * K + kid - 1] = pidx;
+                                    xyz2Buffer[kid-1] = xyz2;
+                                    if (xyz2 > far2){
+                                        far2 = xyz2;
+                                        far_ind = kid - 1;
                                     }
-                                } 
+                                } else {
+                                    if (xyz2 < far2) {
+                                        sample_pidx[index * K + far_ind] = pidx;
+                                        xyz2Buffer[far_ind] = xyz2;
+                                        far2 = xyz2;
+                                        for (int i = 0; i < K; i++) {
+                                            if (xyz2Buffer[i] > far2) {
+                                                far2 = xyz2Buffer[i];
+                                                far_ind = i;
+                                            }
+                                        }
+                                    } 
+                                }
                             }
                         }
                     }
                 }
             }
         }
+        if (kid >= K) break;
     }
+}
 }
