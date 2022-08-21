@@ -8,7 +8,7 @@ else:
 
 
 class VoxelGrid(object):
-    r""" Computes eigenvectors and eigenvalues of symmetric 3x3 matrices in a batch.
+    r""" Defines a Voxel Grid object in which points can be inserted and then queried.
     Args:
         voxel_grid_size (Tuple[int]): Tuple of size 3, specifying x, y, z voxel grid dimensions.
         num_samples_per_ray (int): Number of samples per ray.
@@ -28,16 +28,8 @@ class VoxelGrid(object):
         self.query_along_ray = getattr(knnquery_cuda, 'query_along_ray_layered')
         
 
-    def get_hyperparameters(self, vsize_np, point_xyz_w_tensor, ranges=None):
-        '''
-        :param l:
-        :param h:
-        :param w:
-        :param zdim:
-        :param ydim:
-        :param xdim:
-        :return:
-        '''
+    def insert_points(self, points, actual_num_points_per_batch):
+        
         min_xyz, max_xyz = torch.min(point_xyz_w_tensor, dim=-2)[0][0], torch.max(point_xyz_w_tensor, dim=-2)[0][0]
         vscale_np = np.array(self.opt.vscale, dtype=np.int32)
         scaled_vsize_np = (vsize_np * vscale_np).astype(np.float32)
@@ -59,14 +51,10 @@ class VoxelGrid(object):
             np.asarray(self.opt.query_size, dtype=np.int32))
 
         radius_limit_np, depth_limit_np = self.opt.radius_limit_scale * max(vsize_np[0], vsize_np[1]), self.opt.depth_limit_scale * vsize_np[2]
-        return np.asarray(radius_limit_np).astype(np.float32), np.asarray(depth_limit_np).astype(np.float32), ranges_np, vsize_np, vdim_np, scaled_vsize_np, scaled_vdim_np, vscale_np, ranges_gpu, scaled_vsize_gpu, scaled_vdim_gpu, vscale_gpu, kernel_size_gpu, query_size_gpu
 
-
-    def insert_points(self, points, actual_num_points_per_batch):
-        
         near_depth, far_depth = np.asarray(near_depth).item() , np.asarray(far_depth).item()
-        radius_limit_np, depth_limit_np, ranges_np, vsize_np, vdim_np, scaled_vsize_np, scaled_vdim_np, vscale_np, range_gpu, scaled_vsize_gpu, scaled_vdim_gpu, vscale_gpu, kernel_size_gpu, query_size_gpu = self.get_hyperparameters(self.opt.vsize, point_xyz_w_tensor, ranges=self.opt.ranges)
 
+        
         device = points.device
         kMaxThreadsPerBlock = 1024
         B, N = points.size(0), points.size(1)
