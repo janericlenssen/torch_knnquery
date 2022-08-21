@@ -1,4 +1,4 @@
-
+// From https://github.com/Xharlie/pointnerf/blob/master/models/neural_points/query_point_indices_worldcoords.py
 #include <ATen/ATen.h>
 
 #include <cuda.h>

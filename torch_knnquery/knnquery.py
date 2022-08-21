@@ -1,5 +1,6 @@
 import torch
 from typing import Tuple
+import time
 
 if torch.cuda.is_available():
     import knnquery_cuda
@@ -12,14 +13,37 @@ class VoxelGrid(object):
     Args:
         voxel_grid_size (Tuple[int]): Tuple of size 3, specifying x, y, z voxel grid dimensions.
         num_samples_per_ray (int): Number of samples per ray.
+        max_o (int): Maximum of non-empty voxels stored at each frustrum
+        P (int): Maximum of points stored at each block
 
     """
     def __init__(self,
                  voxel_grid_size: Tuple[int],
                  num_samples_per_ray: int,
+                 vscale: Tuple[float],
+                 vsize: Tuple[float],
+                 kernel_size: Tuple[int],
+                 query_size: Tuple[int],
+                 radius_limit_scale: float,
+                 depth_limit_scale: float,
+                 P: int,
+                 max_o: float,
+                 ranges: Tuple[int] = None,
                  ):
         self.voxel_grid_size = voxel_grid_size
         self.num_samples_per_ray = num_samples_per_ray
+        self.vscale = vscale
+        self.vsize = vsize
+        self.scaled_vsize = vscale * vscale
+        self.kernel_size = kernel_size
+        self.query_size = query_size
+        self.radius_limit_scale = radius_limit_scale
+        self.depth_limit_scale = depth_limit_scale
+        self.P = P
+        self.max_o = max_o
+        self.ranges = ranges
+
+        # Get CUDA kernel functions
         self.claim_occ = getattr(knnquery_cuda, 'claim_occ')
         self.map_coor2occ = getattr(knnquery_cuda, 'map_coor2occ')
         self.fill_occ2pnts = getattr(knnquery_cuda, 'fill_occ2pnts')
@@ -29,48 +53,41 @@ class VoxelGrid(object):
         
 
     def insert_points(self, points, actual_num_points_per_batch):
-        
-        min_xyz, max_xyz = torch.min(point_xyz_w_tensor, dim=-2)[0][0], torch.max(point_xyz_w_tensor, dim=-2)[0][0]
-        vscale_np = np.array(self.opt.vscale, dtype=np.int32)
-        scaled_vsize_np = (vsize_np * vscale_np).astype(np.float32)
-        if ranges is not None:
+        assert points.is_cuda
+        min_xyz, max_xyz = torch.min(points, dim=-2)[0][0], torch.max(points, dim=-2)[0][0]
+        B, N = points.size(0), points.size(1)
+        if self.ranges is not None:
             # print("min_xyz", min_xyz.shape)
             # print("max_xyz", max_xyz.shape)
             # print("ranges", ranges)
-            min_xyz, max_xyz = torch.max(torch.stack([min_xyz, torch.as_tensor(ranges[:3], dtype=torch.float32, device=min_xyz.device)], dim=0), dim=0)[0], torch.min(torch.stack([max_xyz, torch.as_tensor(ranges[3:], dtype=torch.float32,  device=min_xyz.device)], dim=0), dim=0)[0]
-        min_xyz = min_xyz - torch.as_tensor(scaled_vsize_np * self.opt.kernel_size / 2, device=min_xyz.device, dtype=torch.float32)
-        max_xyz = max_xyz + torch.as_tensor(scaled_vsize_np * self.opt.kernel_size / 2, device=min_xyz.device, dtype=torch.float32)
+            min_xyz = torch.max(torch.stack([min_xyz, self.ranges[:3]], dim=0), dim=0)[0], 
+            max_xyz = torch.min(torch.stack([max_xyz, self.ranges[3:]], dim=0), dim=0)[0]
+        min_xyz = min_xyz - self.scaled_vsize * self.kernel_size / 2
+        max_xyz = max_xyz + self.scaled_vsize * self.kernel_size / 2
 
-        ranges_np = torch.cat([min_xyz, max_xyz], dim=-1).cpu().numpy().astype(np.float32)
+        self.ranges = torch.cat([min_xyz, max_xyz], dim=-1)
         # print("ranges_np",ranges_np)
-        vdim_np = (max_xyz - min_xyz).cpu().numpy() / vsize_np
+        vdim_np = (max_xyz - min_xyz) / self.vsize
 
-        scaled_vdim_np = np.ceil(vdim_np / vscale_np).astype(np.int32)
-        ranges_gpu, scaled_vsize_gpu, scaled_vdim_gpu, vscale_gpu, kernel_size_gpu, query_size_gpu = np_to_gpuarray(
-            ranges_np, scaled_vsize_np, scaled_vdim_np, vscale_np, np.asarray(self.opt.kernel_size, dtype=np.int32),
-            np.asarray(self.opt.query_size, dtype=np.int32))
+        self.scaled_vdim = torch.ceil(vdim_np / self.vscale).type(torch.int32)
 
-        radius_limit_np, depth_limit_np = self.opt.radius_limit_scale * max(vsize_np[0], vsize_np[1]), self.opt.depth_limit_scale * vsize_np[2]
-
-        near_depth, far_depth = np.asarray(near_depth).item() , np.asarray(far_depth).item()
-
+        self.radius_limit = self.radius_limit_scale * max(self.vsize[0], self.vsize[1]), 
+        self.depth_limit = self.depth_limit_scale * self.vsize[2]
         
-        device = points.device
         kMaxThreadsPerBlock = 1024
-        B, N = points.size(0), points.size(1)
-        pixel_size = scaled_vdim_np[0] * scaled_vdim_np[1]
-        grid_size_vol = pixel_size * scaled_vdim_np[2]
-        d_coord_shift = ranges_gpu[:3]
-        R, D = raypos_tensor.shape[1], raypos_tensor.shape[2]
-        R = pixel_idx_tensor.reshape(B, -1, 2).shape[1]
+        self.pixel_size = self.scaled_vdim[0] * self.scaled_vdim[1]
+        self.grid_size_vol = self.pixel_size * self.scaled_vdim[2]
+        self.d_coord_shift = self.ranges[:3]
         gridSize = int((B * N + kMaxThreadsPerBlock - 1) / kMaxThreadsPerBlock)
-8
+
         B = points.size(0)
-        coor_occ_tensor = torch.zeros([B, scaled_vdim_np[0], scaled_vdim_np[1], scaled_vdim_np[2]], dtype=torch.int32, device=device)
-        occ_2_pnts_tensor = torch.full([B, max_o, P], -1, dtype=torch.int32, device=device)
-        occ_2_coor_tensor = torch.full([B, max_o, 3], -1, dtype=torch.int32, device=device)
-        occ_numpnts_tensor = torch.zeros([B, max_o], dtype=torch.int32, device=device)
-        coor_2_occ_tensor = torch.full([B, scaled_vdim_np[0], scaled_vdim_np[1], scaled_vdim_np[2]], -1, dtype=torch.int32, device=device)
+
+        device = points.device
+        self.coor_occ_tensor = torch.zeros([B, self.scaled_vdim[0], self.scaled_vdim[1], self.scaled_vdim[2]], dtype=torch.int32, device=device)
+        self.occ_2_pnts_tensor = torch.full([B, self.max_o, self.P], -1, dtype=torch.int32, device=device)
+        self.occ_2_coor_tensor = torch.full([B, self.max_o, 3], -1, dtype=torch.int32, device=device)
+        self.occ_numpnts_tensor = torch.zeros([B, self.max_o], dtype=torch.int32, device=device)
+        self.coor_2_occ_tensor = torch.full([B, self.scaled_vdim[0], self.scaled_vdim[1], self.scaled_vdim[2]], -1, dtype=torch.int32, device=device)
         occ_idx_tensor = torch.zeros([B], dtype=torch.int32, device=device)
         seconds = time.time()
 
@@ -79,54 +96,52 @@ class VoxelGrid(object):
             actual_num_points_per_batch,
             B,
             N,
-            d_coord_shift,
-            scaled_vsize_gpu,
-            scaled_vdim_gpu,
-            np.int32(grid_size_vol),
-            np.int32(max_o),
-            Holder(occ_idx_tensor),
-            Holder(coor_2_occ_tensor),
-            Holder(occ_2_coor_tensor),
-            np.uint64(seconds),
+            self.d_coord_shift,
+            self.scaled_vsize,
+            self.scaled_vdim,
+            self.grid_size_vol,
+            self.max_o,
+            occ_idx_tensor,
+            self.coor_2_occ_tensor,
+            self.occ_2_coor_tensor,
+            seconds,
             block=(kMaxThreadsPerBlock, 1, 1), grid=(gridSize, 1))
         # torch.cuda.synchronize()
-        coor_2_occ_tensor = torch.full([B, scaled_vdim_np[0], scaled_vdim_np[1], scaled_vdim_np[2]], -1,
+        self.coor_2_occ_tensor = torch.full([B, self.scaled_vdim[0], self.scaled_vdim[1], self.scaled_vdim[2]], -1,
                                        dtype=torch.int32, device=device)
-        gridSize = int((B * max_o + kMaxThreadsPerBlock - 1) / kMaxThreadsPerBlock)
+        gridSize = int((B * self.max_o + kMaxThreadsPerBlock - 1) / kMaxThreadsPerBlock)
         self.map_coor2occ(
-            np.int32(B),
-            scaled_vdim_gpu,
-            kernel_size_gpu,
-            np.int32(grid_size_vol),
-            np.int32(max_o),
-            Holder(occ_idx_tensor),
-            Holder(coor_occ_tensor),
-            Holder(coor_2_occ_tensor),
-            Holder(occ_2_coor_tensor),
+            B,
+            self.scaled_vdim,
+            self.kernel_size,
+            self.grid_size_vol,
+            self.max_o,
+            occ_idx_tensor,
+            self.coor_occ_tensor,
+            self.coor_2_occ_tensor,
+            self.occ_2_coor_tensor,
             block=(kMaxThreadsPerBlock, 1, 1), grid=(gridSize, 1))
         # torch.cuda.synchronize()
         seconds = time.time()
 
         gridSize = int((B * N + kMaxThreadsPerBlock - 1) / kMaxThreadsPerBlock)
         self.fill_occ2pnts(
-            Holder(point_xyz_w_tensor),
-            Holder(actual_numpoints_tensor),
-            np.int32(B),
-            np.int32(N),
-            np.int32(P),
-            d_coord_shift,
-            scaled_vsize_gpu,
-            scaled_vdim_gpu,
-            np.int32(grid_size_vol),
-            np.int32(max_o),
-            Holder(coor_2_occ_tensor),
-            Holder(occ_2_pnts_tensor),
-            Holder(occ_numpnts_tensor),
-            np.uint64(seconds),
+            points,
+            actual_num_points_per_batch,
+            B,
+            N,
+            self.P,
+            self.d_coord_shift,
+            self.scaled_vsize,
+            self.scaled_vdim,
+            self.grid_size_vol,
+            self.max_o,
+            self.coor_2_occ_tensor,
+            self.occ_2_pnts_tensor,
+            self.occ_numpnts_tensor,
+            seconds,
             block=(kMaxThreadsPerBlock, 1, 1), grid=(gridSize, 1))
 
-        indices = getattr(knnquery_cuda, 'insert_points')(points)
-        self.current_point_indices = indices
 
 
 
@@ -140,7 +155,7 @@ class VoxelGrid(object):
         R = pixel_idx_tensor.reshape(B, -1, 2).shape[1]
         gridSize = int((B * N + kMaxThreadsPerBlock - 1) / kMaxThreadsPerBlock)
 
-        coor_occ_tensor, occ_2_coor_tensor, coor_2_occ_tensor, occ_idx_tensor, occ_numpnts_tensor, occ_2_pnts_tensor = self.build_occ_vox(point_xyz_w_tensor, actual_numpoints_tensor, B, N, P, max_o, scaled_vdim_np, kMaxThreadsPerBlock, gridSize, scaled_vsize_gpu, scaled_vdim_gpu, query_size_gpu, grid_size_vol, d_coord_shift)
+        coor_occ_tensor, coor_2_occ_tensor, occ_numpnts_tensor, occ_2_pnts_tensor = self.build_occ_vox(point_xyz_w_tensor, actual_numpoints_tensor, B, N, P, max_o, scaled_vdim_np, kMaxThreadsPerBlock, gridSize, scaled_vsize_gpu, scaled_vdim_gpu, query_size_gpu, grid_size_vol, d_coord_shift)
 
         # torch.cuda.synchronize()
         # print("coor_occ_tensor", torch.min(coor_occ_tensor), torch.max(coor_occ_tensor), torch.min(occ_2_coor_tensor), torch.max(occ_2_coor_tensor), torch.min(coor_2_occ_tensor), torch.max(coor_2_occ_tensor), torch.min(occ_idx_tensor), torch.max(occ_idx_tensor), torch.min(occ_numpnts_tensor), torch.max(occ_numpnts_tensor), torch.min(occ_2_pnts_tensor), torch.max(occ_2_pnts_tensor), occ_2_pnts_tensor.shape)
