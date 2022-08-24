@@ -16,8 +16,10 @@ void find_occupied_voxels(
   size_t N,
   at::Tensor d_coord_shift,
   at::Tensor scaled_vsize,
-  scalar_t grid_size_vol,
-  scalar_t max_o,
+  at::Tensor scaled_vdim,
+  float grid_size_vol,
+  size_t max_o,
+  at::Tensor coor_idx_tensor,
   at::Tensor coor_2_occ_tensor,
   at::Tensor occ_2_coor_tensor,
   unsigned long seconds
@@ -108,8 +110,10 @@ void find_occupied_voxels(
   size_t N,
   at::Tensor d_coord_shift,
   at::Tensor scaled_vsize,
+  at::Tensor scaled_vdim,
   float grid_size_vol,
   size_t max_o,
+  at::Tensor coor_idx_tensor,
   at::Tensor coor_2_occ_tensor,
   at::Tensor occ_2_coor_tensor,
   unsigned long seconds
@@ -118,6 +122,8 @@ void find_occupied_voxels(
   CHECK_INPUT(actual_num_points_per_batch);
   CHECK_INPUT(d_coord_shift);
   CHECK_INPUT(scaled_vsize);
+  CHECK_INPUT(scaled_vdim);
+  CHECK_INPUT(coor_idx_tensor);
   CHECK_INPUT(coor_2_occ_tensor);
   CHECK_INPUT(occ_2_coor_tensor);
 
@@ -131,8 +137,10 @@ void find_occupied_voxels(
       N,
       d_coord_shift.data<scalar_t>(),
       scaled_vsize.data<scalar_t>(),
+      scaled_vdim.data<scalar_t>(),
       grid_size_vol,
       max_o,
+      coor_idx_tensor,
       coor_2_occ_tensor.data<scalar_t>(),
       occ_2_coor_tensor.data<scalar_t>(),
       seconds

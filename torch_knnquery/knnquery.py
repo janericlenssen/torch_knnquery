@@ -11,13 +11,9 @@ else:
 class VoxelGrid(object):
     r""" Defines a Voxel Grid object in which points can be inserted and then queried.
     Args:
-        voxel_grid_size (Tuple[int]): Tuple of size 3, specifying x, y, z voxel grid dimensions.
-        num_samples_per_ray (int):
-        vscale (Tuple[float]):
-        vsize (Tuple[float]):
+        voxel_size (Tuple[float]): Tuple of size 3, specifying x, y, z voxel grid dimensions.
+        vscale (Tuple[float]): Tuple of size 3, specifying x, y, z voxel scales.
         kernel_size (Tuple[int]): Size of voxel kernel to consider for nearest neighbor queries
-        radius_limit_scale (float):
-        depth_limit_scale (float):
         max_points_per_voxel (int): Maximum number of points in each voxel
         max_occ_voxels_per_example (float): Maximum of occupied voxels for each example
         ranges (Tuple[int], optional): 
@@ -25,26 +21,20 @@ class VoxelGrid(object):
     """
     def __init__(
         self,
-        voxel_grid_size: Tuple[int],
-        vscale: Tuple[float],
-        vsize: Tuple[float],
+        voxel_size: Tuple[int],
+        voxel_scale: Tuple[float],
         kernel_size: Tuple[int],
-        radius_limit_scale: float,
-        depth_limit_scale: float,
         max_points_per_voxel: int,
         max_occ_voxels_per_example: float,
         ranges: Optional[Tuple[int]] = None,
         ):
 
-        self.voxel_grid_size = voxel_grid_size
-        self.vscale = vscale
-        self.vsize = vsize
-        self.scaled_vsize = vscale * vscale
+        self.vscale = voxel_scale
+        self.vsize = voxel_size
+        self.scaled_vsize = voxel_size * voxel_scale
         self.scaled_vsize_tensor = torch.Tensor(self.scaled_vsize).cuda()
         self.kernel_size = kernel_size
         self.kernel_size_tensor = torch.Tensor(kernel_size).cuda()
-        self.radius_limit_scale = radius_limit_scale
-        self.depth_limit_scale = depth_limit_scale
         self.P = max_points_per_voxel
         self.max_o = max_occ_voxels_per_example
         self.ranges = ranges
@@ -90,9 +80,6 @@ class VoxelGrid(object):
 
         self.scaled_vdim_tensor = torch.ceil(vdim_np / self.vscale).type(torch.int32)
         self.scaled_vdim = self.scaled_vdim_tensor.numpy()
-
-        self.radius_limit = self.radius_limit_scale * max(self.vsize[0], self.vsize[1]), 
-        self.depth_limit = self.depth_limit_scale * self.vsize[2]
         
         self.pixel_size = self.scaled_vdim[0] * self.scaled_vdim[1]
         self.grid_size_vol = self.pixel_size * self.scaled_vdim[2]
@@ -177,12 +164,14 @@ class VoxelGrid(object):
     def query(self, 
         raypos: torch.Tensor,
         k: int, 
+        radius_limit_scale: float,
         max_shading_points_per_ray: Optional[int] = 24
         ): 
         r""" Find the k-nearest neighbors of ray samples from each point cloud
         Args:
             raypos (torch.Tensor): Tensor of size [num_rays, num_samples_per_ray, 3] containing query positions.
             k (int): number of nearest neighbors to sample.
+            radius_limit_scale (float): radius limit in which to search for nearest neighbors.
             max_shading_points_per_ray (int, optional): The maximum number of points per ray for which neighbors are sampled.
                 The first max_shading_points_per_ray samples of each ray that hit occupied voxels return neighbors.
         """
@@ -240,6 +229,7 @@ class VoxelGrid(object):
             # Performs the actual knn queries for all points in sample_loc_tensor
             # Output: 
             # sample_pidx_tensor: for each entry in sample_loc_tensor, contains the indices of found neighbors
+            radius_limit = radius_limit_scale * max(self.vsize[0], self.vsize[1]), 
             self.query_along_ray(
                 self.points,
                 self.B,
@@ -249,7 +239,7 @@ class VoxelGrid(object):
                 self.P,
                 k,
                 self.grid_size_vol,
-                self.radius_limit ** 2,
+                radius_limit ** 2,
                 self.d_coord_shift_tensor,
                 self.scaled_vdim_tensor,
                 self.scaled_vsize_tensor,
