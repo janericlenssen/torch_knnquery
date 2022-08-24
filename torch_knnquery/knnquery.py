@@ -1,5 +1,5 @@
 import torch
-from typing import Tuple
+from typing import Tuple, Optional
 import time
 
 if torch.cuda.is_available():
@@ -12,38 +12,41 @@ class VoxelGrid(object):
     r""" Defines a Voxel Grid object in which points can be inserted and then queried.
     Args:
         voxel_grid_size (Tuple[int]): Tuple of size 3, specifying x, y, z voxel grid dimensions.
-        num_samples_per_ray (int): Number of samples per ray.
-        max_o (int): Maximum of non-empty voxels stored at each frustrum
-        P (int): Maximum of points stored at each block
+        num_samples_per_ray (int):
+        vscale (Tuple[float]):
+        vsize (Tuple[float]):
+        kernel_size (Tuple[int]): Size of voxel kernel to consider for nearest neighbor queries
+        radius_limit_scale (float):
+        depth_limit_scale (float):
+        max_points_per_voxel (int): Maximum number of points in each voxel
+        max_occ_voxels_per_example (float): Maximum of occupied voxels for each example
+        ranges (Tuple[int], Optional): 
 
     """
-    def __init__(self,
-                 voxel_grid_size: Tuple[int],
-                 num_samples_per_ray: int,
-                 vscale: Tuple[float],
-                 vsize: Tuple[float],
-                 kernel_size: Tuple[int],
-                 query_size: Tuple[int],
-                 radius_limit_scale: float,
-                 depth_limit_scale: float,
-                 P: int,
-                 max_o: float,
-                 ranges: Tuple[int] = None,
-                 ):
+    def __init__(
+        self,
+        voxel_grid_size: Tuple[int],
+        vscale: Tuple[float],
+        vsize: Tuple[float],
+        kernel_size: Tuple[int],
+        radius_limit_scale: float,
+        depth_limit_scale: float,
+        max_points_per_voxel: int,
+        max_occ_voxels_per_example: float,
+        ranges: Optional[Tuple[int]] = None,
+        ):
+
         self.voxel_grid_size = voxel_grid_size
-        self.num_samples_per_ray = num_samples_per_ray
         self.vscale = vscale
         self.vsize = vsize
         self.scaled_vsize = vscale * vscale
         self.scaled_vsize_tensor = torch.Tensor(self.scaled_vsize).cuda()
         self.kernel_size = kernel_size
         self.kernel_size_tensor = torch.Tensor(kernel_size).cuda()
-        self.query_size = query_size
-        self.query_size_tensor = torch.Tensor(query_size).cuda()
         self.radius_limit_scale = radius_limit_scale
         self.depth_limit_scale = depth_limit_scale
-        self.P = P
-        self.max_o = max_o
+        self.P = max_points_per_voxel
+        self.max_o = max_occ_voxels_per_example
         self.ranges = ranges
         self.kMaxThreadsPerBlock = 1024
 
@@ -95,6 +98,11 @@ class VoxelGrid(object):
         occ_idx_tensor = torch.zeros([self.B], dtype=torch.int32, device=device)
         seconds = time.time()
 
+        # Find the set of voxels that get occupied by the given point set.
+        # Outputs:
+        # occ_idx_tensor: for each example in the batch holds the number of occupied voxels in occ_2_coor_tensor
+        # coor_2_occ_tensor: for each voxel in 3D grid, 0 of voxel is occupied, -1 otherwise
+        # occ_2_corr_tensor: one entry for each occupied voxel, contains 3D coordinates of voxel in voxel grid
         self.find_occupied_voxels(
             points,
             actual_num_points_per_batch,
@@ -110,10 +118,15 @@ class VoxelGrid(object):
             self.occ_2_coor_tensor,
             seconds
             )
-        # torch.cuda.synchronize()
+
         self.coor_2_occ_tensor = torch.full([self.B, self.scaled_vdim[0], self.scaled_vdim[1], self.scaled_vdim[2]], -1,
                                        dtype=torch.int32, device=device)
 
+        # For each occupied voxel in the 3D grid, occupies voxels within kernel_size around it
+        # For each occupied voxel stores the id of voxel in occ_2_corr_tensor
+        # Outputs:
+        # coor_occ_tensor: or each voxel in 3D grid, 1 of voxel is occupied, 0 otherwise
+        # coor_2_occ_tensor: has the index of voxel in occ_2_corr_tensor
         self.create_coor_occ_maps(
             self.B,
             self.scaled_vdim_tensor,
@@ -128,6 +141,10 @@ class VoxelGrid(object):
         # torch.cuda.synchronize()
         seconds = time.time()
 
+        # Assigns each point to an occupied voxel
+        # Outputs:
+        # occ_2_pnts_tensor: For each occupied voxel, stores the indices of points assigned to this voxel
+        # occ_numpnts_tensor: For each occupied voxel, stores the number of points assigned to this voxel
         self.assign_points_to_occ_voxels(
             points,
             actual_num_points_per_batch,
@@ -146,18 +163,19 @@ class VoxelGrid(object):
             )
 
 
-    def query(self, raypos_tensor, num_neighbors, samples_per_ray): 
+    def query(self, 
+        raypos_tensor: torch.Tensor,
+        num_neighbors: int, 
+        max_shading_points_per_ray: Optional[int] = 24
+        ): 
         device = raypos_tensor.device
         R, D = raypos_tensor.size(1), raypos_tensor.size(2)
 
-        
-        # torch.cuda.synchronize()
-        # print("coor_occ_tensor", torch.min(coor_occ_tensor), torch.max(coor_occ_tensor), torch.min(occ_2_coor_tensor), torch.max(occ_2_coor_tensor), torch.min(coor_2_occ_tensor), torch.max(coor_2_occ_tensor), torch.min(occ_idx_tensor), torch.max(occ_idx_tensor), torch.min(occ_numpnts_tensor), torch.max(occ_numpnts_tensor), torch.min(occ_2_pnts_tensor), torch.max(occ_2_pnts_tensor), occ_2_pnts_tensor.shape)
-        # print("occ_numpnts_tensor", torch.sum(occ_numpnts_tensor > 0), ranges_np)
-        # vis_vox(ranges_np, scaled_vsize_np, coor_2_occ_tensor)
-
         raypos_mask_tensor = torch.zeros([self.B, R, D], dtype=torch.int32, device=device)
 
+        # Check which query positions actually hit occupied voxels.
+        # Output: 
+        # # raypos_mask_tensor contains binary indicators for each query position
         self.create_raypos_mask(
             raypos_tensor,  # [1, 2048, 400, 3]
             self.coor_occ_tensor,  # [1, 2048, 400, 3]
@@ -171,45 +189,43 @@ class VoxelGrid(object):
             raypos_mask_tensor
         )
 
-        # torch.cuda.synchronize()
-        # print("raypos_mask_tensor", raypos_mask_tensor.shape, torch.sum(coor_occ_tensor), torch.sum(raypos_mask_tensor))
-        # save_points(raypos_tensor.reshape(-1, 3), "./", "rawraypos_pnts")
-        # raypos_masked = torch.masked_select(raypos_tensor, raypos_mask_tensor[..., None] > 0)
-        # save_points(raypos_masked.reshape(-1, 3), "./", "raypos_pnts")
 
         ray_mask_tensor = torch.max(raypos_mask_tensor, dim=-1)[0] > 0 # B, R
         R = torch.max(torch.sum(ray_mask_tensor.to(torch.int32))).cpu().numpy()
-        sample_loc_tensor = torch.zeros([self.B, R, samples_per_ray, 3], dtype=torch.float32, device=device)
-        sample_pidx_tensor = torch.full([self.B, R, samples_per_ray, K], -1, dtype=torch.int32, device=device)
+        sample_loc_tensor = torch.zeros([self.B, R, max_shading_points_per_ray, 3], dtype=torch.float32, device=device)
+        sample_pidx_tensor = torch.full([self.B, R, max_shading_points_per_ray, num_neighbors], -1, dtype=torch.int32, device=device)
         if R > 0:
             raypos_tensor = torch.masked_select(raypos_tensor, ray_mask_tensor[..., None, None].expand(-1, -1, D, 3)).reshape(self.B, R, D, 3)
             raypos_mask_tensor = torch.masked_select(raypos_mask_tensor, ray_mask_tensor[..., None].expand(-1, -1, D)).reshape(self.B, R, D)
             # print("R", R, raypos_tensor.shape, raypos_mask_tensor.shape)
 
             raypos_maskcum = torch.cumsum(raypos_mask_tensor, dim=-1).to(torch.int32)
-            raypos_mask_tensor = (raypos_mask_tensor * raypos_maskcum * (raypos_maskcum <= SR)) - 1
-            sample_loc_mask_tensor = torch.zeros([self.B, R, samples_per_ray], dtype=torch.int32, device=device)
+            raypos_mask_tensor = (raypos_mask_tensor * raypos_maskcum * (raypos_maskcum <= max_shading_points_per_ray)) - 1
+            sample_loc_mask_tensor = torch.zeros([self.B, R, max_shading_points_per_ray], dtype=torch.int32, device=device)
+
+            # For each ray query that hits occupied voxels, 
+            # determine the maximally max_shading_points_per_ray many shading points
+            # Output: 
+            # sample_loc_tensor contains the actual ray queries for which neighbors should be found
+            # sample_loc_mask_tensor contains 1 if the same index in sample_loc_tensor contains a valid sample point
             self.get_shadingloc(
                 raypos_tensor,  # [1, 2048, 400, 3]
                 raypos_mask_tensor,
                 self.B,
                 R,
                 D,
-                samples_per_ray,
+                max_shading_points_per_ray,
                 sample_loc_tensor,
                 sample_loc_mask_tensor
             )
 
-            # torch.cuda.synchronize()
-            # print("shadingloc_mask_tensor", torch.sum(sample_loc_mask_tensor, dim=-1), torch.sum(torch.sum(sample_loc_mask_tensor, dim=-1) > 0), torch.sum(sample_loc_mask_tensor > 0))
-            # shadingloc_masked = torch.masked_select(sample_loc_tensor, sample_loc_mask_tensor[..., None] > 0)
-            # save_points(shadingloc_masked.reshape(-1, 3), "./", "shading_pnts{}".format(self.count))
-
-            seconds = time.time()
+            # Performs the actual knn queries for all points in sample_loc_tensor
+            # Output: 
+            # sample_pidx_tensor: for each entry in sample_loc_tensor, contains the indices of found neighbors
             self.query_along_ray(
                 self.points,
                 self.B,
-                samples_per_ray,
+                max_shading_points_per_ray,
                 R,
                 self.max_o,
                 self.P,
@@ -227,17 +243,12 @@ class VoxelGrid(object):
                 sample_loc_mask_tensor,
                 sample_pidx_tensor
                 )
-            # torch.cuda.synchronize()
-            # print("point_xyz_w_tensor",point_xyz_w_tensor.shape)
-            # queried_masked = point_xyz_w_tensor[0][sample_pidx_tensor.reshape(-1).to(torch.int64), :]
-            # save_points(queried_masked.reshape(-1, 3), "./", "queried_pnts{}".format(self.count))
-            # print("valid ray",  torch.sum(torch.sum(sample_loc_mask_tensor, dim=-1) > 0))
-            #
+            
             masked_valid_ray = torch.sum(sample_pidx_tensor.view(self.B, R, -1) >= 0, dim=-1) > 0
             R = torch.max(torch.sum(masked_valid_ray.to(torch.int32), dim=-1)).cpu().numpy()
             ray_mask_tensor.masked_scatter_(ray_mask_tensor, masked_valid_ray)
-            sample_pidx_tensor = torch.masked_select(sample_pidx_tensor, masked_valid_ray[..., None, None].expand(-1, -1, samples_per_ray, num_neighbors))
-            sample_pidx_tensor = sample_pidx_tensor.reshape(self.B, R, samples_per_ray, num_neighbors)
-            sample_loc_tensor = torch.masked_select(sample_loc_tensor, masked_valid_ray[..., None, None].expand(-1, -1, samples_per_ray, 3)).reshape(self.B, R, samples_per_ray, 3)
+            sample_pidx_tensor = torch.masked_select(sample_pidx_tensor, masked_valid_ray[..., None, None].expand(-1, -1, max_shading_points_per_ray, num_neighbors))
+            sample_pidx_tensor = sample_pidx_tensor.reshape(self.B, R, max_shading_points_per_ray, num_neighbors)
+            sample_loc_tensor = torch.masked_select(sample_loc_tensor, masked_valid_ray[..., None, None].expand(-1, -1, max_shading_points_per_ray, 3)).reshape(self.B, R, max_shading_points_per_ray, 3)
         # self.count+=1
         return sample_pidx_tensor, sample_loc_tensor, ray_mask_tensor.to(torch.int8)
