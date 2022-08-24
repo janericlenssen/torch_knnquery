@@ -84,7 +84,6 @@ class VoxelGrid(object):
         self.grid_size_vol = self.pixel_size * self.scaled_vdim[2]
         self.d_coord_shift = self.ranges[:3]
         self.d_coord_shift_tensor = torch.Tensor(self.d_coord_shift).cuda()
-        gridSize = int((self.B * self.N + self.kMaxThreadsPerBlock - 1) / self.kMaxThreadsPerBlock)
 
 
         device = points.device
@@ -109,12 +108,12 @@ class VoxelGrid(object):
             occ_idx_tensor,
             self.coor_2_occ_tensor,
             self.occ_2_coor_tensor,
-            seconds,
-            block=(self.kMaxThreadsPerBlock, 1, 1), grid=(gridSize, 1))
+            seconds
+            )
         # torch.cuda.synchronize()
         self.coor_2_occ_tensor = torch.full([self.B, self.scaled_vdim[0], self.scaled_vdim[1], self.scaled_vdim[2]], -1,
                                        dtype=torch.int32, device=device)
-        gridSize = int((self.B * self.max_o + self.kMaxThreadsPerBlock - 1) / self.kMaxThreadsPerBlock)
+
         self.map_coor2occ(
             self.B,
             self.scaled_vdim_tensor,
@@ -124,12 +123,11 @@ class VoxelGrid(object):
             occ_idx_tensor,
             self.coor_occ_tensor,
             self.coor_2_occ_tensor,
-            self.occ_2_coor_tensor,
-            block=(self.kMaxThreadsPerBlock, 1, 1), grid=(gridSize, 1))
+            self.occ_2_coor_tensor
+            )
         # torch.cuda.synchronize()
         seconds = time.time()
 
-        gridSize = int((self.B * self.N + self.kMaxThreadsPerBlock - 1) / self.kMaxThreadsPerBlock)
         self.fill_occ2pnts(
             points,
             actual_num_points_per_batch,
@@ -144,14 +142,13 @@ class VoxelGrid(object):
             self.coor_2_occ_tensor,
             self.occ_2_pnts_tensor,
             self.occ_numpnts_tensor,
-            seconds,
-            block=(self.kMaxThreadsPerBlock, 1, 1), grid=(gridSize, 1))
+            seconds
+            )
 
 
     def query(self, raypos_tensor, num_neighbors, samples_per_ray): 
         device = raypos_tensor.device
         R, D = raypos_tensor.size(1), raypos_tensor.size(2)
-        gridSize = int((self.B * self.N + self.kMaxThreadsPerBlock - 1) / self.kMaxThreadsPerBlock)
 
         
         # torch.cuda.synchronize()
@@ -160,7 +157,7 @@ class VoxelGrid(object):
         # vis_vox(ranges_np, scaled_vsize_np, coor_2_occ_tensor)
 
         raypos_mask_tensor = torch.zeros([self.B, R, D], dtype=torch.int32, device=device)
-        gridSize = int((self.B * R * D + self.kMaxThreadsPerBlock - 1) / self.kMaxThreadsPerBlock)
+
         self.mask_raypos(
             raypos_tensor,  # [1, 2048, 400, 3]
             self.coor_occ_tensor,  # [1, 2048, 400, 3]
@@ -171,8 +168,7 @@ class VoxelGrid(object):
             self.d_coord_shift_tensor,
             self.scaled_vdim,
             self.scaled_vsize,
-            raypos_mask_tensor,
-            block=(self.kMaxThreadsPerBlock, 1, 1), grid=(gridSize, 1)
+            raypos_mask_tensor
         )
 
         # torch.cuda.synchronize()
