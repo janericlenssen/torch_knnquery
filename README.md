@@ -42,7 +42,7 @@ voxel_grid.set_pointset(
 
 Query k-nearest neighbors for ray samples through the `VoxelGrid`:
 ```python
-voxel_grid.query(self, 
+sample_point_indices, sample_locations, ray_mask = voxel_grid.query(
         raypos=raypos_tensor,           # Tensor of size [num_rays, num_samples_per_ray, 3] 
                                         # containing query positions.
         k=8,                            # Number of neighbors to sample for each ray sample 
@@ -51,4 +51,17 @@ voxel_grid.query(self,
                                         # are sampled. The first max_shading_points_per_ray samples 
                                         # of each ray that hit occupied voxels return neighbors.
         )
+```
+
+Returns are:
+```python
+sample_point_indices    # Tensor of size [B, num_valid_rays, max_shading_points_per_ray, k]
+                        # containing the indices of the k nearest neighbors in points_tensor
+                        # for each of the B point clouds
+sample_locations        # Tensor of size [B, num_valid_rays, max_shading_points_per_ray, 3]
+                        # containing the positions of the used shading points for each
+                        # of the B point clouds
+ray_mask                # Tensor of size [B, num_original_rays], containing 1 for rays
+                        # that produced shading points (valid rays) and 0 for others.
+
 ```
