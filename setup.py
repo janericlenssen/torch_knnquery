@@ -1,22 +1,20 @@
 from setuptools import setup, find_packages
 import torch
-from torch.utils.cpp_extension import CppExtension, CUDAExtension, CUDA_HOME
+from torch.utils.cpp_extension import CUDAExtension, BuildExtension, CUDA_HOME
 
-cmdclass = {'build_ext': torch.utils.cpp_extension.BuildExtension}
-ext_modules = []
-if CUDA_HOME is None:
+print('CUDA_HOME', CUDA_HOME)
+if not torch.cuda.is_available() or CUDA_HOME is None:
     raise NotImplementedError('The torch_knnquery module only works with CUDA')
 
-ext_modules += [
+ext_modules = [
     CUDAExtension('knnquery_cuda',
-                    ['cuda/knnquery.cpp', 'cuda/knnquery.cu'])
+                    ['src/knnquery.cpp', 'src/knnquery.cu'])
 ]
 __version__ = '1.0.0'
 #url = 'https://github.com/janericlenssen/torch_knnquery'
 
 install_requires = ['torchvision']
-setup_requires = ['pytest-runner']
-tests_require = ['pytest', 'pytest-cov', 'numpy']
+tests_require = ['numpy']
 
 setup(
     name='torch_knnquery',
@@ -30,9 +28,11 @@ setup(
         'pytorch', 'voxel grid', 'knn', 'neural points'
     ],
     install_requires=install_requires,
-    setup_requires=setup_requires,
     tests_require=tests_require,
     ext_modules=ext_modules,
-    cmdclass=cmdclass,
+    cmdclass={
+        'build_ext':
+        BuildExtension.with_options(no_python_abi_suffix=True, use_ninja=False)
+    },
     packages=find_packages(),
 )

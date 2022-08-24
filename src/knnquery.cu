@@ -11,122 +11,6 @@
 #include <curand_kernel.h> 
 
 
-namespace cu_cuda {          
-    static __device__ inline uint8_t atomicAdd(uint8_t *address, uint8_t val) {
-        size_t offset = (size_t)address & 3;
-        uint32_t *address_as_ui = (uint32_t *)(address - offset);
-        uint32_t old = *address_as_ui;
-        uint32_t shift = offset * 8;
-        uint32_t old_byte;
-        uint32_t newval;
-        uint32_t assumed;
-
-        do {
-            assumed = old;
-            old_byte = (old >> shift) & 0xff;
-            // preserve size in initial cast. Casting directly to uint32_t pads
-            // negative signed values with 1's (e.g. signed -1 = unsigned ~0).
-            newval = static_cast<uint8_t>(val + old_byte);
-            newval = (old & ~(0x000000ff << shift)) | (newval << shift);
-            old = atomicCAS(address_as_ui, assumed, newval);
-        } while (assumed != old);
-        return __byte_perm(old, 0, offset);   // need validate
-    }
-
-    static __device__ inline char atomicAdd(char* address, char val) {
-        // offset, in bytes, of the char* address within the 32-bit address of the space that overlaps it
-        size_t long_address_modulo = (size_t) address & 3;
-        // the 32-bit address that overlaps the same memory
-        auto* base_address = (unsigned int*) ((char*) address - long_address_modulo);
-        // A 0x3210 selector in __byte_perm will simply select all four bytes in the first argument in the same order.
-        // The "4" signifies the position where the first byte of the second argument will end up in the output.
-        unsigned int selectors[] = {0x3214, 0x3240, 0x3410, 0x4210};
-        // for selecting bytes within a 32-bit chunk that correspond to the char* address (relative to base_address)
-        unsigned int selector = selectors[long_address_modulo];
-        unsigned int long_old, long_assumed, long_val, replacement;
-
-        long_old = *base_address;
-
-        do {
-            long_assumed = long_old;
-            // replace bits in long_old that pertain to the char address with those from val
-            long_val = __byte_perm(long_old, 0, long_address_modulo) + val;
-            replacement = __byte_perm(long_old, long_val, selector);
-            long_old = atomicCAS(base_address, long_assumed, replacement);
-        } while (long_old != long_assumed);
-        return __byte_perm(long_old, 0, long_address_modulo);
-    }            
-
-    static __device__ inline int8_t atomicAdd(int8_t *address, int8_t val) {
-        return (int8_t)cuda::atomicAdd((char*)address, (char)val);
-    }
-
-    static __device__ inline short atomicAdd(short* address, short val)
-    {
-
-        unsigned int *base_address = (unsigned int *)((size_t)address & ~2);
-
-        unsigned int long_val = ((size_t)address & 2) ? ((unsigned int)val << 16) : (unsigned short)val;
-
-        unsigned int long_old = ::atomicAdd(base_address, long_val);
-
-        if((size_t)address & 2) {
-            return (short)(long_old >> 16);
-        } else {
-
-            unsigned int overflow = ((long_old & 0xffff) + long_val) & 0xffff0000;
-
-            if (overflow)
-
-                atomicSub(base_address, overflow);
-
-            return (short)(long_old & 0xffff);
-        }
-    }
-
-    static __device__ float cas(double *addr, double compare, double val) {
-        unsigned long long int *address_as_ull = (unsigned long long int *) addr;
-        return __longlong_as_double(atomicCAS(address_as_ull,
-                                        __double_as_longlong(compare),
-                                        __double_as_longlong(val)));
-    }
-
-    static __device__ float cas(float *addr, float compare, float val) {
-        unsigned int *address_as_uint = (unsigned int *) addr;
-        return __uint_as_float(atomicCAS(address_as_uint,
-                                __float_as_uint(compare),
-                                __float_as_uint(val)));
-    }
-
-
-
-    static __device__ inline uint8_t atomicCAS(uint8_t * const address, uint8_t const compare, uint8_t const value)
-    {
-        uint8_t const longAddressModulo = reinterpret_cast< size_t >( address ) & 0x3;
-        uint32_t *const baseAddress  = reinterpret_cast< uint32_t * >( address - longAddressModulo );
-        uint32_t constexpr byteSelection[] = { 0x3214, 0x3240, 0x3410, 0x4210 }; // The byte position we work on is '4'.
-        uint32_t const byteSelector = byteSelection[ longAddressModulo ];
-        uint32_t const longCompare = compare;
-        uint32_t const longValue = value;
-        uint32_t longOldValue = * baseAddress;
-        uint32_t longAssumed;
-        uint8_t oldValue;
-        do {
-            // Select bytes from the old value and new value to construct a 32-bit value to use.
-            uint32_t const replacement = __byte_perm( longOldValue, longValue,   byteSelector );
-            uint32_t const comparison  = __byte_perm( longOldValue, longCompare, byteSelector );
-
-            longAssumed  = longOldValue;
-            // Use 32-bit atomicCAS() to try and set the 8-bits we care about.
-            longOldValue = ::atomicCAS( baseAddress, comparison, replacement );
-            // Grab the 8-bit portion we care about from the old value at address.
-            oldValue     = ( longOldValue >> ( 8 * longAddressModulo )) & 0xFF;
-        } while ( compare == oldValue and longAssumed != longOldValue ); // Repeat until other three 8-bit values stabilize.
-        return oldValue;
-    }
-}
-
-
 template <typename scalar_t>
 __global__ void claim_occ_kernel(
     const float* in_data,   // B * N * 3
@@ -369,7 +253,7 @@ __global__ void query_along_ray_kernel(
                         
     int kid = 0, far_ind = 0, coor_z, coor_y, coor_x;
     scalar_t far2 = 0.0;
-    scalar_t xyz2Buffer[KN];
+    scalar_t xyz2Buffer[K];
     for (int layer = 0; layer < (kernel_size[0]+1)/2; layer++){                        
         for (int x = max(-frustx, -layer); x < min(d_grid_size[0] - frustx, layer + 1); x++) {
             coor_x = frustx + x;
