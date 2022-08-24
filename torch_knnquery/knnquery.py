@@ -47,11 +47,11 @@ class VoxelGrid(object):
         self.ranges = ranges
         self.kMaxThreadsPerBlock = 1024
 
-        # Get CUDA kernel functions
-        self.claim_occ = getattr(knnquery_cuda, 'claim_occ')
-        self.map_coor2occ = getattr(knnquery_cuda, 'map_coor2occ')
-        self.fill_occ2pnts = getattr(knnquery_cuda, 'fill_occ2pnts')
-        self.mask_raypos = getattr(knnquery_cuda, 'mask_raypos')
+        # Get C++ functions
+        self.find_occupied_voxels = getattr(knnquery_cuda, 'find_occupied_voxels')
+        self.create_coor_occ_maps = getattr(knnquery_cuda, 'create_coor_occ_maps')
+        self.assign_points_to_occ_voxels = getattr(knnquery_cuda, 'assign_points_to_occ_voxels')
+        self.create_raypos_mask = getattr(knnquery_cuda, 'create_raypos_mask')
         self.get_shadingloc = getattr(knnquery_cuda, 'get_shadingloc')
         self.query_along_ray = getattr(knnquery_cuda, 'query_along_ray_layered')
         
@@ -95,7 +95,7 @@ class VoxelGrid(object):
         occ_idx_tensor = torch.zeros([self.B], dtype=torch.int32, device=device)
         seconds = time.time()
 
-        self.claim_occ(
+        self.find_occupied_voxels(
             points,
             actual_num_points_per_batch,
             self.B,
@@ -114,7 +114,7 @@ class VoxelGrid(object):
         self.coor_2_occ_tensor = torch.full([self.B, self.scaled_vdim[0], self.scaled_vdim[1], self.scaled_vdim[2]], -1,
                                        dtype=torch.int32, device=device)
 
-        self.map_coor2occ(
+        self.create_coor_occ_maps(
             self.B,
             self.scaled_vdim_tensor,
             self.kernel_size_tensor,
@@ -128,7 +128,7 @@ class VoxelGrid(object):
         # torch.cuda.synchronize()
         seconds = time.time()
 
-        self.fill_occ2pnts(
+        self.assign_points_to_occ_voxels(
             points,
             actual_num_points_per_batch,
             self.B,
@@ -158,7 +158,7 @@ class VoxelGrid(object):
 
         raypos_mask_tensor = torch.zeros([self.B, R, D], dtype=torch.int32, device=device)
 
-        self.mask_raypos(
+        self.create_raypos_mask(
             raypos_tensor,  # [1, 2048, 400, 3]
             self.coor_occ_tensor,  # [1, 2048, 400, 3]
             self.B,
@@ -197,8 +197,7 @@ class VoxelGrid(object):
                 D,
                 samples_per_ray,
                 sample_loc_tensor,
-                sample_loc_mask_tensor,
-                block=(self.kMaxThreadsPerBlock, 1, 1), grid=(gridSize, 1)
+                sample_loc_mask_tensor
             )
 
             # torch.cuda.synchronize()
@@ -207,7 +206,6 @@ class VoxelGrid(object):
             # save_points(shadingloc_masked.reshape(-1, 3), "./", "shading_pnts{}".format(self.count))
 
             seconds = time.time()
-            gridSize = int((self.B * R * samples_per_ray + self.kMaxThreadsPerBlock - 1) / self.kMaxThreadsPerBlock)
             self.query_along_ray(
                 self.points,
                 self.B,
@@ -227,8 +225,8 @@ class VoxelGrid(object):
                 self.coor_2_occ_tensor,
                 sample_loc_tensor,
                 sample_loc_mask_tensor,
-                sample_pidx_tensor,
-                block=(self.kMaxThreadsPerBlock, 1, 1), grid=(gridSize, 1))
+                sample_pidx_tensor
+                )
             # torch.cuda.synchronize()
             # print("point_xyz_w_tensor",point_xyz_w_tensor.shape)
             # queried_masked = point_xyz_w_tensor[0][sample_pidx_tensor.reshape(-1).to(torch.int64), :]

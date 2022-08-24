@@ -9,7 +9,7 @@
 
 // --- Headers --- //
 
-void claim_occ(
+void find_occupied_voxels(
   at::Tensor points,
   at::Tensor actual_num_points_per_batch,
   size_t B,
@@ -101,7 +101,7 @@ void query_along_ray(
 
 // --- Implementation --- //
 
-void claim_occ(
+void find_occupied_voxels(
   at::Tensor points,
   at::Tensor actual_num_points_per_batch,
   size_t B,
@@ -141,7 +141,7 @@ void claim_occ(
 }
 
 
-void map_coor2occ(
+void create_coor_occ_maps(
   size_t B,
   at::Tensor scaled_vdim,
   at::Tensor kernel_size,
@@ -176,7 +176,7 @@ void map_coor2occ(
   });
 }
 
-void fill_occ2pnts(
+void assign_points_to_occ_voxels(
   at::Tensor points,
   at::Tensor actual_num_points_per_batch,
   size_t B,
@@ -223,7 +223,7 @@ void fill_occ2pnts(
   });
 }
 
-void mask_raypos(
+void create_raypos_mask(
   at::Tensor raypos_tensor,
   at::Tensor coor_occ_tensor,
   size_t B,
@@ -353,10 +353,10 @@ void query_along_ray(
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("claim_occ", &claim_occ, "Claim occupied voxels");
-  m.def("map_coor2occ", &map_coor2occ, "Map coordinates to occupied voxels");
-  m.def("fill_occ2pnts", &fill_occ2pnts, "Fill occupied voxels with points");
-  m.def("mask_raypos", &mask_raypos, "Find mask of ray positions that hit occupied voxels");
+  m.def("find_occupied_voxels", &find_occupied_voxels, "Find occupied voxels");
+  m.def("create_coor_occ_maps", &create_coor_occ_maps, "Map voxel coordinates to occupied voxels and back");
+  m.def("assign_points_to_occ_voxels", &assign_points_to_occ_voxels, "Assign points to occupied voxels");
+  m.def("create_raypos_mask", &create_raypos_mask, "Find mask for ray positions that hit occupied voxels");
   m.def("get_shadingloc", &get_shadingloc, "Get shading locations");
   m.def("query_along_ray", &query_along_ray, "Query KNN point indices");
 }
