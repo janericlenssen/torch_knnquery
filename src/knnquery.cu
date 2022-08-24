@@ -126,13 +126,15 @@ namespace cu_cuda {
     }
 }
 
+
+template <typename scalar_t>
 __global__ void claim_occ_kernel(
     const float* in_data,   // B * N * 3
     const int* in_actual_numpoints, // B 
     const int B,
     const int N,
-    const float *d_coord_shift,     // 3
-    const float *d_voxel_size,      // 3
+    const scalar_t *d_coord_shift,     // 3
+    const scalar_t *d_voxel_size,      // 3
     const int *d_grid_size,       // 3
     const int grid_size_vol,
     const int max_o,
@@ -147,7 +149,7 @@ __global__ void claim_occ_kernel(
     int i_pt = index - N * i_batch;
     if (i_pt < in_actual_numpoints[i_batch]) {
         int coor[3];
-        const float *p_pt = in_data + index * 3;
+        const scalar_t *p_pt = in_data + index * 3;
         coor[0] = (int) floor((p_pt[0] - d_coord_shift[0]) / d_voxel_size[0]);
         coor[1] = (int) floor((p_pt[1] - d_coord_shift[1]) / d_voxel_size[1]);
         coor[2] = (int) floor((p_pt[2] - d_coord_shift[2]) / d_voxel_size[2]);
@@ -188,6 +190,7 @@ __global__ void claim_occ_kernel(
     }
 }
 
+template <typename scalar_t>
 __global__ void map_coor2occ_kernel(
     const int B,
     const int *d_grid_size,       // 3
@@ -225,14 +228,15 @@ __global__ void map_coor2occ_kernel(
     }
 }
 
+template <typename scalar_t>
 __global__ void fill_occ2pnts_kernel(
-    const float* in_data,   // B * N * 3
+    const scalar_t* in_data,   // B * N * 3
     const int* in_actual_numpoints, // B 
     const int B,
     const int N,
     const int P,
-    const float *d_coord_shift,     // 3
-    const float *d_voxel_size,      // 3
+    const scalar_t *d_coord_shift,     // 3
+    const scalar_t *d_voxel_size,      // 3
     const int *d_grid_size,       // 3
     const int grid_size_vol,
     const int max_o,
@@ -247,7 +251,7 @@ __global__ void fill_occ2pnts_kernel(
     int i_pt = index - N * i_batch;
     if (i_pt < in_actual_numpoints[i_batch]) {
         int coor[3];
-        const float *p_pt = in_data + index * 3;
+        const scalar_t *p_pt = in_data + index * 3;
         coor[0] = (int) floor((p_pt[0] - d_coord_shift[0]) / d_voxel_size[0]);
         coor[1] = (int) floor((p_pt[1] - d_coord_shift[1]) / d_voxel_size[1]);
         coor[2] = (int) floor((p_pt[2] - d_coord_shift[2]) / d_voxel_size[2]);
@@ -272,17 +276,18 @@ __global__ void fill_occ2pnts_kernel(
     }
 }
 
-            
+    
+template <typename scalar_t>        
 __global__ void mask_raypos_kernel(
-    float *raypos,    // [B, 2048, 400, 3]
+    scalar_t *raypos,    // [B, 2048, 400, 3]
     int *coor_occ,    // B * 400 * 400 * 400
     const int B,       // 3
     const int R,       // 3
     const int D,       // 3
     const int grid_size_vol,
-    const float *d_coord_shift,     // 3
+    const scalar_t *d_coord_shift,     // 3
     const int *d_grid_size,       // 3
-    const float *d_voxel_size,      // 3
+    const scalar_t *d_voxel_size,      // 3
     int *raypos_mask    // B, R, D
 ) {
     int index = blockIdx.x * blockDim.x + threadIdx.x; // index of gpu thread
@@ -300,14 +305,15 @@ __global__ void mask_raypos_kernel(
 }
 
 
+template <typename scalar_t>
 __global__ void get_shadingloc_kernel(
-    const float *raypos,    // [B, 2048, 400, 3]
+    const scalar_t *raypos,    // [B, 2048, 400, 3]
     const int *raypos_mask,    // B, R, D
     const int B,       // 3
     const int R,       // 3
     const int D,       // 3
     const int SR,       // 3
-    float *sample_loc,       // B * R * SR * 3
+    scalar_t *sample_loc,       // B * R * SR * 3
     int *sample_loc_mask       // B * R * SR
 ) {
     int index = blockIdx.x * blockDim.x + threadIdx.x; // index of gpu thread
@@ -325,8 +331,9 @@ __global__ void get_shadingloc_kernel(
 }
 
 
+template <typename scalar_t>
 __global__ void query_along_ray_kernel(
-    const float* in_data,   // B * N * 3
+    const scalar_t* in_data,   // B * N * 3
     const int B,
     const int SR,               // num. samples along each ray e.g., 128
     const int R,               // e.g., 1024
@@ -334,24 +341,24 @@ __global__ void query_along_ray_kernel(
     const int P,
     const int K,                // num.  neighbors
     const int grid_size_vol,
-    const float radius_limit2,
-    const float *d_coord_shift,     // 3
+    const scalar_t radius_limit2,
+    const scalar_t *d_coord_shift,     // 3
     const int *d_grid_size,
-    const float *d_voxel_size,      // 3
+    const scalar_t *d_voxel_size,      // 3
     const int *kernel_size,
     const int *occ_numpnts,    // B * max_o
     const int *occ_2_pnts,            // B * max_o * P
     const int *coor_2_occ,      // B * 400 * 400 * 400 
-    const float *sample_loc,       // B * R * SR * 3
+    const scalar_t *sample_loc,       // B * R * SR * 3
     const int *sample_loc_mask,       // B * R * SR
     int *sample_pidx       // B * R * SR * K
 ) {
     int index =  blockIdx.x * blockDim.x + threadIdx.x; // index of gpu thread
     int i_batch = index / (R * SR);  // index of batch
     if (i_batch >= B || sample_loc_mask[index] <= 0) { return; }
-    float centerx = sample_loc[index * 3];
-    float centery = sample_loc[index * 3 + 1];
-    float centerz = sample_loc[index * 3 + 2];
+    scalar_t centerx = sample_loc[index * 3];
+    scalar_t centery = sample_loc[index * 3 + 1];
+    scalar_t centerz = sample_loc[index * 3 + 2];
     int frustx = (int) floor((centerx - d_coord_shift[0]) / d_voxel_size[0]);
     int frusty = (int) floor((centery - d_coord_shift[1]) / d_voxel_size[1]);
     int frustz = (int) floor((centerz - d_coord_shift[2]) / d_voxel_size[2]);
@@ -361,8 +368,8 @@ __global__ void query_along_ray_kernel(
     centerz = sample_loc[index * 3 + 2];
                         
     int kid = 0, far_ind = 0, coor_z, coor_y, coor_x;
-    float far2 = 0.0;
-    float xyz2Buffer[KN];
+    scalar_t far2 = 0.0;
+    scalar_t xyz2Buffer[KN];
     for (int layer = 0; layer < (kernel_size[0]+1)/2; layer++){                        
         for (int x = max(-frustx, -layer); x < min(d_grid_size[0] - frustx, layer + 1); x++) {
             coor_x = frustx + x;
@@ -376,10 +383,10 @@ __global__ void query_along_ray_kernel(
                     if (occ_indx >= 0) {
                         for (int g = 0; g < min(P, occ_numpnts[occ_indx]); g++) {
                             int pidx = occ_2_pnts[occ_indx * P + g];
-                            float x_v = (in_data[pidx*3]-centerx);
-                            float y_v = (in_data[pidx*3 + 1]-centery);
-                            float z_v = (in_data[pidx*3 + 2]-centerz);
-                            float xyz2 = x_v * x_v + y_v * y_v + z_v * z_v;
+                            scalar_t x_v = (in_data[pidx*3]-centerx);
+                            scalar_t y_v = (in_data[pidx*3 + 1]-centery);
+                            scalar_t z_v = (in_data[pidx*3 + 2]-centerz);
+                            scalar_t xyz2 = x_v * x_v + y_v * y_v + z_v * z_v;
                             if ((radius_limit2 == 0 || xyz2 <= radius_limit2)){
                                 if (kid++ < K) {
                                     sample_pidx[index * K + kid - 1] = pidx;
