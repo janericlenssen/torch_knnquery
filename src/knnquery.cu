@@ -126,7 +126,7 @@ namespace cu_cuda {
     }
 }
 
-__global__ void claim_occ(
+__global__ void claim_occ_kernel(
     const float* in_data,   // B * N * 3
     const int* in_actual_numpoints, // B 
     const int B,
@@ -188,7 +188,7 @@ __global__ void claim_occ(
     }
 }
 
-__global__ void map_coor2occ(
+__global__ void map_coor2occ_kernel(
     const int B,
     const int *d_grid_size,       // 3
     const int *kernel_size,       // 3
@@ -225,7 +225,7 @@ __global__ void map_coor2occ(
     }
 }
 
-__global__ void fill_occ2pnts(
+__global__ void fill_occ2pnts_kernel(
     const float* in_data,   // B * N * 3
     const int* in_actual_numpoints, // B 
     const int B,
@@ -273,7 +273,7 @@ __global__ void fill_occ2pnts(
 }
 
             
-__global__ void mask_raypos(
+__global__ void mask_raypos_kernel(
     float *raypos,    // [B, 2048, 400, 3]
     int *coor_occ,    // B * 400 * 400 * 400
     const int B,       // 3
@@ -300,7 +300,7 @@ __global__ void mask_raypos(
 }
 
 
-__global__ void get_shadingloc(
+__global__ void get_shadingloc_kernel(
     const float *raypos,    // [B, 2048, 400, 3]
     const int *raypos_mask,    // B, R, D
     const int B,       // 3
@@ -325,7 +325,7 @@ __global__ void get_shadingloc(
 }
 
 
-__global__ void query_neigh_along_ray_layered(
+__global__ void query_along_ray_kernel(
     const float* in_data,   // B * N * 3
     const int B,
     const int SR,               // num. samples along each ray e.g., 128
@@ -344,9 +344,7 @@ __global__ void query_neigh_along_ray_layered(
     const int *coor_2_occ,      // B * 400 * 400 * 400 
     const float *sample_loc,       // B * R * SR * 3
     const int *sample_loc_mask,       // B * R * SR
-    int *sample_pidx,       // B * R * SR * K
-    unsigned long seconds,
-    const int NN
+    int *sample_pidx       // B * R * SR * K
 ) {
     int index =  blockIdx.x * blockDim.x + threadIdx.x; // index of gpu thread
     int i_batch = index / (R * SR);  // index of batch
@@ -411,5 +409,4 @@ __global__ void query_neigh_along_ray_layered(
         }
         if (kid >= K) break;
     }
-}
 }
