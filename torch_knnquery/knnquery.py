@@ -11,7 +11,7 @@ else:
 class VoxelGrid(object):
     r""" Defines a Voxel Grid object in which points can be inserted and then queried.
     Args:
-        voxel_size (Tuple[float]): Tuple of size 3, specifying x, y, z voxel grid dimensions.
+        vsize (Tuple[float]): Tuple of size 3, specifying x, y, z voxel grid dimensions.
         vscale (Tuple[float]): Tuple of size 3, specifying x, y, z voxel scales.
         kernel_size (Tuple[int]): Size of voxel kernel to consider for nearest neighbor queries
         max_points_per_voxel (int): Maximum number of points in each voxel
@@ -21,7 +21,7 @@ class VoxelGrid(object):
     """
     def __init__(
         self,
-        voxel_size: Tuple[int],
+        voxel_size: Tuple[float],
         voxel_scale: Tuple[float],
         kernel_size: Tuple[int],
         max_points_per_voxel: int,
@@ -29,15 +29,14 @@ class VoxelGrid(object):
         ranges: Optional[Tuple[int]] = None,
         ):
 
-        self.vscale = voxel_scale
-        self.vsize = voxel_size
-        self.scaled_vsize = voxel_size * voxel_scale
-        self.scaled_vsize_tensor = torch.Tensor(self.scaled_vsize).cuda()
-        self.kernel_size = kernel_size
-        self.kernel_size_tensor = torch.Tensor(kernel_size).cuda()
+        self.vscale = torch.Tensor(voxel_scale).to(torch.float32).cuda()
+        self.vsize = torch.Tensor(voxel_size).to(torch.float32).cuda()
+
+        self.scaled_vsize = (self.vsize * self.vscale).cuda()
+        self.kernel_size = torch.Tensor(kernel_size).cuda()
         self.P = max_points_per_voxel
         self.max_o = max_occ_voxels_per_example
-        self.ranges = ranges
+        self.ranges = torch.Tensor(ranges).to(torch.float32).cuda()
         self.kMaxThreadsPerBlock = 1024
 
         # Get C++ functions
@@ -46,7 +45,7 @@ class VoxelGrid(object):
         self.assign_points_to_occ_voxels = getattr(knnquery_cuda, 'assign_points_to_occ_voxels')
         self.create_raypos_mask = getattr(knnquery_cuda, 'create_raypos_mask')
         self.get_shadingloc = getattr(knnquery_cuda, 'get_shadingloc')
-        self.query_along_ray = getattr(knnquery_cuda, 'query_along_ray_layered')
+        self.query_along_ray = getattr(knnquery_cuda, 'query_along_ray')
         
 
     def set_pointset(
@@ -69,8 +68,9 @@ class VoxelGrid(object):
             # print("min_xyz", min_xyz.shape)
             # print("max_xyz", max_xyz.shape)
             # print("ranges", ranges)
-            min_xyz = torch.max(torch.stack([min_xyz, self.ranges[:3]], dim=0), dim=0)[0], 
+            min_xyz = torch.max(torch.stack([min_xyz, self.ranges[:3]], dim=0), dim=0)[0]
             max_xyz = torch.min(torch.stack([max_xyz, self.ranges[3:]], dim=0), dim=0)[0]
+
         min_xyz = min_xyz - self.scaled_vsize * self.kernel_size / 2
         max_xyz = max_xyz + self.scaled_vsize * self.kernel_size / 2
 
@@ -78,13 +78,12 @@ class VoxelGrid(object):
         # print("ranges_np",ranges_np)
         vdim_np = (max_xyz - min_xyz) / self.vsize
 
-        self.scaled_vdim_tensor = torch.ceil(vdim_np / self.vscale).type(torch.int32)
-        self.scaled_vdim = self.scaled_vdim_tensor.numpy()
+        self.scaled_vdim = torch.ceil(vdim_np / self.vscale).type(torch.int32)
+
         
         self.pixel_size = self.scaled_vdim[0] * self.scaled_vdim[1]
         self.grid_size_vol = self.pixel_size * self.scaled_vdim[2]
         self.d_coord_shift = self.ranges[:3]
-        self.d_coord_shift_tensor = torch.Tensor(self.d_coord_shift).cuda()
 
 
         device = points.device
@@ -106,9 +105,9 @@ class VoxelGrid(object):
             actual_num_points_per_example,
             self.B,
             self.N,
-            self.d_coord_shift_tensor,
-            self.scaled_vsize_tensor,
-            self.scaled_vdim_tensor,
+            self.d_coord_shift,
+            self.scaled_vsize,
+            self.scaled_vdim,
             self.grid_size_vol,
             self.max_o,
             occ_idx_tensor,
@@ -127,8 +126,8 @@ class VoxelGrid(object):
         # coor_2_occ_tensor: has the index of voxel in occ_2_corr_tensor
         self.create_coor_occ_maps(
             self.B,
-            self.scaled_vdim_tensor,
-            self.kernel_size_tensor,
+            self.scaled_vdim,
+            self.kernel_size,
             self.grid_size_vol,
             self.max_o,
             occ_idx_tensor,
@@ -149,9 +148,9 @@ class VoxelGrid(object):
             self.B,
             self.N,
             self.P,
-            self.d_coord_shift_tensor,
-            self.scaled_vsize_tensor,
-            self.scaled_vdim_tensor,
+            self.d_coord_shift,
+            self.scaled_vsize,
+            self.scaled_vdim,
             self.grid_size_vol,
             self.max_o,
             self.coor_2_occ_tensor,
@@ -191,7 +190,7 @@ class VoxelGrid(object):
             R,
             D,
             self.grid_size_vol,
-            self.d_coord_shift_tensor,
+            self.d_coord_shift,
             self.scaled_vdim,
             self.scaled_vsize,
             raypos_mask_tensor
@@ -241,10 +240,10 @@ class VoxelGrid(object):
                 k,
                 self.grid_size_vol,
                 radius_limit ** 2,
-                self.d_coord_shift_tensor,
-                self.scaled_vdim_tensor,
-                self.scaled_vsize_tensor,
-                self.kernel_size_tensor,
+                self.d_coord_shift,
+                self.scaled_vdim,
+                self.scaled_vsize,
+                self.kernel_size,
                 self.occ_numpnts_tensor,
                 self.occ_2_pnts_tensor,
                 self.coor_2_occ_tensor,
