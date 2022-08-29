@@ -1,4 +1,4 @@
-// From https://github.com/Xharlie/pointnerf/blob/master/models/neural_points/query_point_indices_worldcoords.py
+#include <torch/extension.h>
 #include <ATen/ATen.h>
 
 #include <cuda.h>
@@ -10,15 +10,24 @@
 #include <stdlib.h>
 #include <curand_kernel.h> 
 
+#define IS_CUDA(x) AT_ASSERTM(x.type().is_cuda(), #x " must be CUDA tensor");
+#define IS_CONTIGUOUS(x) AT_ASSERTM(x.is_contiguous(), #x " is not contiguous");
+#define CHECK_INPUT(x) IS_CUDA(x) IS_CONTIGUOUS(x)
+
+#define THREADS 1024
+#define BLOCKS(N) (N + THREADS - 1) / THREADS
+
+// --- Kernels --- //
+
 
 template <typename scalar_t>
 __global__ void claim_occ_kernel(
-    const float* in_data,   // B * N * 3
+    const scalar_t* in_data,   // B * N * 3
     const int* in_actual_numpoints, // B 
     const int B,
     const int N,
-    const scalar_t *d_coord_shift,     // 3
-    const scalar_t *d_voxel_size,      // 3
+    const float *d_coord_shift,     // 3
+    const float *d_voxel_size,      // 3
     const int *d_grid_size,       // 3
     const int grid_size_vol,
     const int max_o,
@@ -119,8 +128,8 @@ __global__ void fill_occ2pnts_kernel(
     const int B,
     const int N,
     const int P,
-    const scalar_t *d_coord_shift,     // 3
-    const scalar_t *d_voxel_size,      // 3
+    const float *d_coord_shift,     // 3
+    const float *d_voxel_size,      // 3
     const int *d_grid_size,       // 3
     const int grid_size_vol,
     const int max_o,
@@ -169,9 +178,9 @@ __global__ void mask_raypos_kernel(
     const int R,       // 3
     const int D,       // 3
     const int grid_size_vol,
-    const scalar_t *d_coord_shift,     // 3
+    const float *d_coord_shift,     // 3
     const int *d_grid_size,       // 3
-    const scalar_t *d_voxel_size,      // 3
+    const float *d_voxel_size,      // 3
     int *raypos_mask    // B, R, D
 ) {
     int index = blockIdx.x * blockDim.x + threadIdx.x; // index of gpu thread
@@ -225,10 +234,10 @@ __global__ void query_along_ray_kernel(
     const int P,
     const int K,                // num.  neighbors
     const int grid_size_vol,
-    const scalar_t radius_limit2,
-    const scalar_t *d_coord_shift,     // 3
+    const float radius_limit2,
+    const float *d_coord_shift,     // 3
     const int *d_grid_size,
-    const scalar_t *d_voxel_size,      // 3
+    const float *d_voxel_size,      // 3
     const int *kernel_size,
     const int *occ_numpnts,    // B * max_o
     const int *occ_2_pnts,            // B * max_o * P
@@ -253,7 +262,7 @@ __global__ void query_along_ray_kernel(
                         
     int kid = 0, far_ind = 0, coor_z, coor_y, coor_x;
     scalar_t far2 = 0.0;
-    scalar_t xyz2Buffer[K];
+    scalar_t xyz2Buffer[20]; // assuming K<=20
     for (int layer = 0; layer < (kernel_size[0]+1)/2; layer++){                        
         for (int x = max(-frustx, -layer); x < min(d_grid_size[0] - frustx, layer + 1); x++) {
             coor_x = frustx + x;
@@ -300,4 +309,273 @@ __global__ void query_along_ray_kernel(
         }
         if (kid >= K) break;
     }
+}
+
+// --- CPP --- //
+
+void find_occupied_voxels(
+  at::Tensor points,
+  at::Tensor actual_num_points_per_batch,
+  int B,
+  int N,
+  at::Tensor d_coord_shift,
+  at::Tensor scaled_vsize,
+  at::Tensor scaled_vdim,
+  int grid_size_vol,
+  int max_o,
+  at::Tensor coor_idx_tensor,
+  at::Tensor coor_2_occ_tensor,
+  at::Tensor occ_2_coor_tensor,
+  unsigned long seconds
+) {
+  CHECK_INPUT(points);
+  CHECK_INPUT(actual_num_points_per_batch);
+  CHECK_INPUT(d_coord_shift);
+  CHECK_INPUT(scaled_vsize);
+  CHECK_INPUT(scaled_vdim);
+  CHECK_INPUT(coor_idx_tensor);
+  CHECK_INPUT(coor_2_occ_tensor);
+  CHECK_INPUT(occ_2_coor_tensor);
+
+  int units = B*N;
+
+  AT_DISPATCH_FLOATING_TYPES(points.type(), "claim_occ_kernel", [&] {
+    claim_occ_kernel<scalar_t><<<BLOCKS(units), THREADS>>>(
+      points.data<scalar_t>(),
+      actual_num_points_per_batch.data<int>(),
+      B,
+      N,
+      d_coord_shift.data<float>(),
+      scaled_vsize.data<float>(),
+      scaled_vdim.data<int>(),
+      grid_size_vol,
+      max_o,
+      coor_idx_tensor.data<int>(),
+      coor_2_occ_tensor.data<int>(),
+      occ_2_coor_tensor.data<int>(),
+      seconds
+    );
+  });
+}
+
+
+void create_coor_occ_maps(
+  size_t B,
+  at::Tensor scaled_vdim,
+  at::Tensor kernel_size,
+  int grid_size_vol,
+  int max_o,
+  at::Tensor occ_idx_tensor,
+  at::Tensor coor_occ_tensor,
+  at::Tensor coor_2_occ_tensor,
+  at::Tensor occ_2_coor_tensor
+) {
+  CHECK_INPUT(scaled_vdim);
+  CHECK_INPUT(kernel_size);
+  CHECK_INPUT(occ_idx_tensor);
+  CHECK_INPUT(coor_occ_tensor);
+  CHECK_INPUT(coor_2_occ_tensor);
+  CHECK_INPUT(occ_2_coor_tensor);
+
+  int units = B * max_o;
+
+  AT_DISPATCH_FLOATING_TYPES(coor_occ_tensor.type(), "map_coor2occ_kernel", [&] {
+    map_coor2occ_kernel<scalar_t><<<BLOCKS(units), THREADS>>>(
+      B,
+      scaled_vdim.data<int>(),
+      kernel_size.data<int>(),
+      grid_size_vol,
+      max_o,
+      occ_idx_tensor.data<int>(),
+      coor_occ_tensor.data<int>(),
+      coor_2_occ_tensor.data<int>(),
+      occ_2_coor_tensor.data<int>()
+    );
+  });
+}
+
+void assign_points_to_occ_voxels(
+  at::Tensor points,
+  at::Tensor actual_num_points_per_batch,
+  int B,
+  int N,
+  int P,
+  at::Tensor d_coord_shift,
+  at::Tensor scaled_vsize,
+  at::Tensor scaled_vdim,
+  int grid_size_vol,
+  int max_o,
+  at::Tensor coor_2_occ_tensor,
+  at::Tensor occ_2_pnts_tensor,
+  at::Tensor occ_numpnts_tensor,
+  unsigned long seconds
+) {
+  CHECK_INPUT(points);
+  CHECK_INPUT(actual_num_points_per_batch);
+  CHECK_INPUT(d_coord_shift);
+  CHECK_INPUT(scaled_vsize);
+  CHECK_INPUT(scaled_vdim);
+  CHECK_INPUT(coor_2_occ_tensor);
+  CHECK_INPUT(occ_2_pnts_tensor);
+  CHECK_INPUT(occ_numpnts_tensor);
+
+  int units = B*N;
+
+  AT_DISPATCH_FLOATING_TYPES(points.type(), "fill_occ2pnts_kernel", [&] {
+    fill_occ2pnts_kernel<scalar_t><<<BLOCKS(units), THREADS>>>(
+      points.data<scalar_t>(),
+      actual_num_points_per_batch.data<int>(),
+      B,
+      N,
+      P,
+      d_coord_shift.data<float>(),
+      scaled_vsize.data<float>(),
+      scaled_vdim.data<int>(),
+      grid_size_vol,
+      max_o,
+      coor_2_occ_tensor.data<int>(),
+      occ_2_pnts_tensor.data<int>(),
+      occ_numpnts_tensor.data<int>(),
+      seconds
+    );
+  });
+}
+
+void create_raypos_mask(
+  at::Tensor raypos_tensor,
+  at::Tensor coor_occ_tensor,
+  int B,
+  int R,
+  int D,
+  int grid_size_vol,
+  at::Tensor d_coord_shift,
+  at::Tensor scaled_vdim,
+  at::Tensor scaled_vsize,
+  at::Tensor raypos_mask_tensor
+) {
+  CHECK_INPUT(raypos_tensor);
+  CHECK_INPUT(coor_occ_tensor);
+  CHECK_INPUT(d_coord_shift);
+  CHECK_INPUT(scaled_vsize);
+  CHECK_INPUT(scaled_vdim);
+  CHECK_INPUT(raypos_mask_tensor);
+
+  int units = B * R * D;
+
+  AT_DISPATCH_FLOATING_TYPES(raypos_tensor.type(), "mask_raypos_kernel", [&] {
+    mask_raypos_kernel<scalar_t><<<BLOCKS(units), THREADS>>>(
+      raypos_tensor.data<scalar_t>(),
+      coor_occ_tensor.data<int>(),
+      B,
+      R,
+      D,
+      grid_size_vol,
+      d_coord_shift.data<float>(),
+      scaled_vdim.data<int>(),
+      scaled_vsize.data<float>(),
+      raypos_mask_tensor.data<int>()
+    );
+  });
+}
+
+
+void get_shadingloc(
+  at::Tensor raypos_tensor,
+  at::Tensor raypos_mask_tensor,
+  int B,
+  int R,
+  int D,
+  int samples_per_ray,
+  at::Tensor sample_loc_tensor,
+  at::Tensor sample_loc_mask_tensor
+) {
+  CHECK_INPUT(raypos_tensor);
+  CHECK_INPUT(raypos_mask_tensor);
+  CHECK_INPUT(sample_loc_tensor);
+  CHECK_INPUT(sample_loc_mask_tensor);
+
+  int units = B * R * D;
+
+  AT_DISPATCH_FLOATING_TYPES(raypos_tensor.type(), "get_shadingloc_kernel", [&] {
+    get_shadingloc_kernel<scalar_t><<<BLOCKS(units), THREADS>>>(
+      raypos_tensor.data<scalar_t>(),
+      raypos_mask_tensor.data<int>(),
+      B,
+      R,
+      D,
+      samples_per_ray,
+      sample_loc_tensor.data<scalar_t>(),
+      sample_loc_mask_tensor.data<int>()
+    );
+  });
+}
+
+
+void query_along_ray(
+  at::Tensor points,
+  int B,
+  int samples_per_ray,
+  int R,
+  int max_o,
+  int P,
+  int num_neighbors,
+  int grid_size_vol,
+  float radius_limit,
+  at::Tensor d_coord_shift,
+  at::Tensor scaled_vdim,
+  at::Tensor scaled_vsize,
+  at::Tensor kernel_size,
+  at::Tensor occ_numpnts_tensor,
+  at::Tensor occ_2_pnts_tensor,
+  at::Tensor coor_2_occ_tensor,
+  at::Tensor sample_loc_tensor,
+  at::Tensor sample_loc_mask_tensor,
+  at::Tensor sample_pidx_tensor
+) {
+  CHECK_INPUT(points);
+  CHECK_INPUT(d_coord_shift);
+  CHECK_INPUT(scaled_vsize);
+  CHECK_INPUT(scaled_vdim);
+  CHECK_INPUT(kernel_size);
+  CHECK_INPUT(occ_numpnts_tensor);
+  CHECK_INPUT(occ_2_pnts_tensor);
+  CHECK_INPUT(coor_2_occ_tensor);
+  CHECK_INPUT(sample_loc_tensor);
+  CHECK_INPUT(sample_loc_mask_tensor);
+  CHECK_INPUT(sample_pidx_tensor);
+
+  int units = B * R * samples_per_ray;
+
+  AT_DISPATCH_FLOATING_TYPES(points.type(), "query_along_ray_kernel", [&] {
+    query_along_ray_kernel<scalar_t><<<BLOCKS(units), THREADS>>>(
+      points.data<scalar_t>(),
+      B,
+      samples_per_ray,
+      R,
+      max_o,
+      P,
+      num_neighbors,
+      grid_size_vol,
+      radius_limit,
+      d_coord_shift.data<float>(),
+      scaled_vdim.data<int>(),
+      scaled_vsize.data<float>(),
+      kernel_size.data<int>(),
+      occ_numpnts_tensor.data<int>(),
+      occ_2_pnts_tensor.data<int>(),
+      coor_2_occ_tensor.data<int>(),
+      sample_loc_tensor.data<scalar_t>(),
+      sample_loc_mask_tensor.data<int>(),
+      sample_pidx_tensor.data<int>()
+    );
+  });
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("find_occupied_voxels", &find_occupied_voxels, "Find occupied voxels");
+  m.def("create_coor_occ_maps", &create_coor_occ_maps, "Map voxel coordinates to occupied voxels and back");
+  m.def("assign_points_to_occ_voxels", &assign_points_to_occ_voxels, "Assign points to occupied voxels");
+  m.def("create_raypos_mask", &create_raypos_mask, "Find mask for ray positions that hit occupied voxels");
+  m.def("get_shadingloc", &get_shadingloc, "Get shading locations");
+  m.def("query_along_ray", &query_along_ray, "Query KNN point indices");
 }

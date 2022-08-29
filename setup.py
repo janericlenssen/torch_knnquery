@@ -8,10 +8,10 @@ if not torch.cuda.is_available() or CUDA_HOME is None:
 
 ext_modules = [
     CUDAExtension('knnquery_cuda',
-                    ['src/knnquery.cpp', 'src/knnquery.cu'])
+                    ['src/knnquery.cu'])
 ]
+
 __version__ = '1.0.0'
-#url = 'https://github.com/janericlenssen/torch_knnquery'
 
 install_requires = ['torchvision']
 tests_require = ['numpy']
@@ -22,8 +22,6 @@ setup(
     description='Implementation of voxel grid data structure for KNN point queries on the GPU in PyTorch',
     author='Jan Eric Lenssen',
     author_email='janeric.lenssen@tu-dortmund.de',
-    #url=url,
-    #download_url='{}/archive/{}.tar.gz'.format(url, __version__),
     keywords=[
         'pytorch', 'voxel grid', 'knn', 'neural points'
     ],
@@ -32,7 +30,7 @@ setup(
     ext_modules=ext_modules,
     cmdclass={
         'build_ext':
-        BuildExtension.with_options(no_python_abi_suffix=True, use_ninja=False)
+        BuildExtension
     },
     packages=find_packages(),
 )
