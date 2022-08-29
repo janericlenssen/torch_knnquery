@@ -188,7 +188,7 @@ class VoxelGrid(object):
         device = raypos.device
         R, D = raypos.size(1), raypos.size(2)
         assert k <= 20, "k cannot be greater than 20"
-        print('R', R)
+
         raypos_mask_tensor = torch.zeros([self.B, R, D], dtype=torch.int32, device=device)
         raypos = raypos.to(torch.float32)
         # Check which query positions actually hit occupied voxels.
