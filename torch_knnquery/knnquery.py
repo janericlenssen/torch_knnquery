@@ -11,8 +11,8 @@ else:
 class VoxelGrid(object):
     r""" Defines a Voxel Grid object in which points can be inserted and then queried.
     Args:
-        vsize (Tuple[float]): Tuple of size 3, specifying x, y, z voxel grid dimensions.
-        vscale (Tuple[float]): Tuple of size 3, specifying x, y, z voxel scales.
+        voxel_size (Tuple[float]): Tuple of size 3, specifying x, y, z voxel grid dimensions.
+        voxel_scale (Tuple[float]): Tuple of size 3, specifying x, y, z voxel scales.
         kernel_size (Tuple[int]): Size of voxel kernel to consider for nearest neighbor queries
         max_points_per_voxel (int): Maximum number of points in each voxel
         max_occ_voxels_per_example (float): Maximum of occupied voxels for each example
@@ -28,12 +28,12 @@ class VoxelGrid(object):
         max_occ_voxels_per_example: float,
         ranges: Optional[Tuple[int]] = None,
         ):
-
+        self.vsize_tup = voxel_size
         self.vscale = torch.Tensor(voxel_scale).to(torch.float32).cuda()
         self.vsize = torch.Tensor(voxel_size).to(torch.float32).cuda()
 
         self.scaled_vsize = (self.vsize * self.vscale).cuda()
-        self.kernel_size = torch.Tensor(kernel_size).cuda()
+        self.kernel_size = torch.Tensor(kernel_size).to(torch.int32).cuda()
         self.P = max_points_per_voxel
         self.max_o = max_occ_voxels_per_example
         self.ranges = torch.Tensor(ranges).to(torch.float32).cuda()
@@ -79,21 +79,21 @@ class VoxelGrid(object):
         vdim_np = (max_xyz - min_xyz) / self.vsize
 
         self.scaled_vdim = torch.ceil(vdim_np / self.vscale).type(torch.int32)
-
+        self.scaled_vdim_np = self.scaled_vdim.cpu().numpy()
         
-        self.pixel_size = self.scaled_vdim[0] * self.scaled_vdim[1]
-        self.grid_size_vol = self.pixel_size * self.scaled_vdim[2]
+        self.pixel_size = self.scaled_vdim[0].item() * self.scaled_vdim[1].item()
+        self.grid_size_vol = self.pixel_size * self.scaled_vdim[2].item()
         self.d_coord_shift = self.ranges[:3]
 
 
         device = points.device
-        self.coor_occ_tensor = torch.zeros([self.B, self.scaled_vdim[0], self.scaled_vdim[1], self.scaled_vdim[2]], dtype=torch.int32, device=device)
+        self.coor_occ_tensor = torch.zeros([self.B, self.scaled_vdim_np[0], self.scaled_vdim_np[1], self.scaled_vdim_np[2]], dtype=torch.int32, device=device)
         self.occ_2_pnts_tensor = torch.full([self.B, self.max_o, self.P], -1, dtype=torch.int32, device=device)
         self.occ_2_coor_tensor = torch.full([self.B, self.max_o, 3], -1, dtype=torch.int32, device=device)
         self.occ_numpnts_tensor = torch.zeros([self.B, self.max_o], dtype=torch.int32, device=device)
-        self.coor_2_occ_tensor = torch.full([self.B, self.scaled_vdim[0], self.scaled_vdim[1], self.scaled_vdim[2]], -1, dtype=torch.int32, device=device)
+        self.coor_2_occ_tensor = torch.full([self.B, self.scaled_vdim_np[0], self.scaled_vdim_np[1], self.scaled_vdim_np[2]], -1, dtype=torch.int32, device=device)
         occ_idx_tensor = torch.zeros([self.B], dtype=torch.int32, device=device)
-        seconds = time.time()
+        seconds = int(round(time.time() * 1000))
 
         # Find the set of voxels that get occupied by the given point set.
         # Outputs:
@@ -116,7 +116,7 @@ class VoxelGrid(object):
             seconds
             )
 
-        self.coor_2_occ_tensor = torch.full([self.B, self.scaled_vdim[0], self.scaled_vdim[1], self.scaled_vdim[2]], -1,
+        self.coor_2_occ_tensor = torch.full([self.B, self.scaled_vdim_np[0], self.scaled_vdim_np[1], self.scaled_vdim_np[2]], -1,
                                        dtype=torch.int32, device=device)
 
         # For each occupied voxel in the 3D grid, occupies voxels within kernel_size around it
@@ -136,7 +136,7 @@ class VoxelGrid(object):
             self.occ_2_coor_tensor
             )
         # torch.cuda.synchronize()
-        seconds = time.time()
+        seconds = int(round(time.time() * 1000))
 
         # Assigns each point to an occupied voxel
         # Outputs:
@@ -202,7 +202,7 @@ class VoxelGrid(object):
         sample_loc_tensor = torch.zeros([self.B, R, max_shading_points_per_ray, 3], dtype=torch.float32, device=device)
         sample_pidx_tensor = torch.full([self.B, R, max_shading_points_per_ray, k], -1, dtype=torch.int32, device=device)
         if R > 0:
-            raypos_tensor = torch.masked_select(raypos_tensor, ray_mask_tensor[..., None, None].expand(-1, -1, D, 3)).reshape(self.B, R, D, 3)
+            raypos = torch.masked_select(raypos, ray_mask_tensor[..., None, None].expand(-1, -1, D, 3)).reshape(self.B, R, D, 3)
             raypos_mask_tensor = torch.masked_select(raypos_mask_tensor, ray_mask_tensor[..., None].expand(-1, -1, D)).reshape(self.B, R, D)
             # print("R", R, raypos_tensor.shape, raypos_mask_tensor.shape)
 
@@ -216,7 +216,7 @@ class VoxelGrid(object):
             # sample_loc_tensor contains the actual ray queries for which neighbors should be found
             # sample_loc_mask_tensor contains 1 if the same index in sample_loc_tensor contains a valid sample point
             self.get_shadingloc(
-                raypos_tensor,  # [1, 2048, 400, 3]
+                raypos,  # [1, 2048, 400, 3]
                 raypos_mask_tensor,
                 self.B,
                 R,
@@ -229,7 +229,7 @@ class VoxelGrid(object):
             # Performs the actual knn queries for all points in sample_loc_tensor
             # Output: 
             # sample_pidx_tensor: for each entry in sample_loc_tensor, contains the indices of found neighbors
-            radius_limit = radius_limit_scale * max(self.vsize[0], self.vsize[1]), 
+            radius_limit = radius_limit_scale * max(self.vsize_tup[0], self.vsize_tup[1])
             self.query_along_ray(
                 self.points,
                 self.B,

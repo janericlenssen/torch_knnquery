@@ -83,7 +83,6 @@ __global__ void claim_occ_kernel(
     }
 }
 
-template <typename scalar_t>
 __global__ void map_coor2occ_kernel(
     const int B,
     const int *d_grid_size,       // 3
@@ -379,8 +378,8 @@ void create_coor_occ_maps(
 
   int units = B * max_o;
 
-  AT_DISPATCH_FLOATING_TYPES(coor_occ_tensor.type(), "map_coor2occ_kernel", [&] {
-    map_coor2occ_kernel<scalar_t><<<BLOCKS(units), THREADS>>>(
+  //AT_DISPATCH_FLOATING_TYPES(double, "map_coor2occ_kernel", [&] {
+    map_coor2occ_kernel<<<BLOCKS(units), THREADS>>>(
       B,
       scaled_vdim.data<int>(),
       kernel_size.data<int>(),
@@ -391,7 +390,7 @@ void create_coor_occ_maps(
       coor_2_occ_tensor.data<int>(),
       occ_2_coor_tensor.data<int>()
     );
-  });
+  //});
 }
 
 void assign_points_to_occ_voxels(
