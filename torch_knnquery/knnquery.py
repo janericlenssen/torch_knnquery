@@ -50,8 +50,8 @@ class VoxelGrid(object):
 
     def set_pointset(
         self, 
-        points, 
-        actual_num_points_per_example
+        points: torch.Tensor, 
+        actual_num_points_per_example: torch.Tensor
         ):
         r""" Inserts a set of point clouds into the VoxelGrid.
         Args:
