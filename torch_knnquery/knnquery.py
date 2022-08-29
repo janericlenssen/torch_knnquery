@@ -61,8 +61,10 @@ class VoxelGrid(object):
 
         """
         assert points.is_cuda
-        self.points = points
+        self.points = points.to(torch.float32)
         min_xyz, max_xyz = torch.min(points, dim=-2)[0][0], torch.max(points, dim=-2)[0][0]
+        #print('max_xyz_b_knn', max_xyz)
+        #print('min_xyz_b_knn', min_xyz)
         self.B, self.N = points.shape[0], points.shape[1]
         if self.ranges is not None:
             # print("min_xyz", min_xyz.shape)
@@ -80,6 +82,15 @@ class VoxelGrid(object):
 
         self.scaled_vdim = torch.ceil(vdim_np / self.vscale).type(torch.int32)
         self.scaled_vdim_np = self.scaled_vdim.cpu().numpy()
+
+        #print('vscale_knn', self.vscale)
+        #print('vdim_np_knn', vdim_np)
+        #print('max_xyz_knn', max_xyz)
+        #print('min_xyz_knn', min_xyz)
+        #print('scaled_vdim_knn', self.scaled_vdim_np)
+        #print('scaled_vsize_knn', self.scaled_vsize)
+        #print('ranges_knn',  self.ranges)
+
         
         self.pixel_size = self.scaled_vdim[0].item() * self.scaled_vdim[1].item()
         self.grid_size_vol = self.pixel_size * self.scaled_vdim[2].item()
@@ -101,7 +112,7 @@ class VoxelGrid(object):
         # coor_2_occ_tensor: for each voxel in 3D grid, 0 of voxel is occupied, -1 otherwise
         # occ_2_corr_tensor: one entry for each occupied voxel, contains 3D coordinates of voxel in voxel grid
         self.find_occupied_voxels(
-            points,
+            self.points,
             actual_num_points_per_example,
             self.B,
             self.N,
@@ -143,7 +154,7 @@ class VoxelGrid(object):
         # occ_2_pnts_tensor: For each occupied voxel, stores the indices of points assigned to this voxel
         # occ_numpnts_tensor: For each occupied voxel, stores the number of points assigned to this voxel
         self.assign_points_to_occ_voxels(
-            points,
+            self.points,
             actual_num_points_per_example,
             self.B,
             self.N,
@@ -177,9 +188,9 @@ class VoxelGrid(object):
         device = raypos.device
         R, D = raypos.size(1), raypos.size(2)
         assert k <= 20, "k cannot be greater than 20"
-
+        print('R', R)
         raypos_mask_tensor = torch.zeros([self.B, R, D], dtype=torch.int32, device=device)
-
+        raypos = raypos.to(torch.float32)
         # Check which query positions actually hit occupied voxels.
         # Output: 
         # # raypos_mask_tensor contains binary indicators for each query position
@@ -195,6 +206,7 @@ class VoxelGrid(object):
             self.scaled_vsize,
             raypos_mask_tensor
         )
+
 
 
         ray_mask_tensor = torch.max(raypos_mask_tensor, dim=-1)[0] > 0 # B, R
