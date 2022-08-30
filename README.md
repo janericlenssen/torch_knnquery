@@ -11,6 +11,13 @@ In comparison to the original implementation, it is:
 - implemented as a PyTorch extension instead of using pycuda, directly working on `torch.Tensor` objects
 - Provides a more pythonic interface.
 
+## Installation
+
+```shell
+git clone git@github.com:janericlenssen/torch_knnquery.git
+cd torch_knnquery
+pip install .
+```
 
 ## Usage
 
