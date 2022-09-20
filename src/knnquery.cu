@@ -570,6 +570,7 @@ void query_along_ray(
   });
 }
 
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("find_occupied_voxels", &find_occupied_voxels, "Find occupied voxels");
   m.def("create_coor_occ_maps", &create_coor_occ_maps, "Map voxel coordinates to occupied voxels and back");

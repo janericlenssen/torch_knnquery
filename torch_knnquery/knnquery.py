@@ -37,6 +37,7 @@ class VoxelGrid(object):
         self.P = max_points_per_voxel
         self.max_o = max_occ_voxels_per_example
         self.ranges = torch.Tensor(ranges).to(torch.float32).cuda()
+        self.ranges_original = self.ranges
         self.kMaxThreadsPerBlock = 1024
 
         # Get C++ functions
@@ -66,12 +67,12 @@ class VoxelGrid(object):
         #print('max_xyz_b_knn', max_xyz)
         #print('min_xyz_b_knn', min_xyz)
         self.B, self.N = points.shape[0], points.shape[1]
-        if self.ranges is not None:
+        if self.ranges_original is not None:
             # print("min_xyz", min_xyz.shape)
             # print("max_xyz", max_xyz.shape)
             # print("ranges", ranges)
-            min_xyz = torch.max(torch.stack([min_xyz, self.ranges[:3]], dim=0), dim=0)[0]
-            max_xyz = torch.min(torch.stack([max_xyz, self.ranges[3:]], dim=0), dim=0)[0]
+            min_xyz = torch.max(torch.stack([min_xyz, self.ranges_original[:3]], dim=0), dim=0)[0]
+            max_xyz = torch.min(torch.stack([max_xyz, self.ranges_original[3:]], dim=0), dim=0)[0]
 
         min_xyz = min_xyz - self.scaled_vsize * self.kernel_size / 2
         max_xyz = max_xyz + self.scaled_vsize * self.kernel_size / 2
