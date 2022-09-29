@@ -33,7 +33,7 @@ voxel_grid = VoxelGrid(
                                                 # (default: [3, 3, 3])
     max_points_per_voxel=26,                    # Maximum number of points stored in a voxel 
                                                 # (default: 26)
-    max_occ_voxels_per_pointcloud=610000,       # Maximum number of occupied voxels per point cloud 
+    max_occ_voxels_per_example=610000,          # Maximum number of occupied voxels per point cloud 
                                                 # (default: 600000)
     ranges=(-10.0,-10.0,-10.0,10.0,10.0,10.0)   # Maximum ranges the VoxelGrid spans 
                                                 # (default: inferred from data)
@@ -55,7 +55,7 @@ voxel_grid.set_pointset(
 Query k-nearest neighbors for ray samples through the `VoxelGrid`:
 ```python
 sample_point_indices, sample_locations, ray_mask = voxel_grid.query(
-        raypos=raypos_tensor,           # Tensor of size [num_rays, num_samples_per_ray, 3] 
+        raypos=raypos_tensor,           # Tensor of size [B, num_rays, num_samples_per_ray, 3] 
                                         # containing query positions.
         k=8,                            # Number of neighbors to sample for each ray sample 
         radius_limit_scale=4,           # Maximum radius to search for neighbors in
@@ -67,13 +67,14 @@ sample_point_indices, sample_locations, ray_mask = voxel_grid.query(
 
 Returns are:
 ```python
-sample_point_indices    # Tensor of size [B, num_valid_rays, max_shading_points_per_ray, k]
+sample_point_indices    # Tensor of size [num_valid_rays, max_shading_points_per_ray, k]
                         # containing the indices of the k nearest neighbors in points_tensor
-                        # for each of the B point clouds
-sample_locations        # Tensor of size [B, num_valid_rays, max_shading_points_per_ray, 3]
+                        # for each of the B point clouds (flattened batch and ray dimensions)
+sample_locations        # Tensor of size [num_valid_rays, max_shading_points_per_ray, 3]
                         # containing the positions of the used shading points for each
-                        # of the B point clouds
+                        # of the B point clouds (flattened batch and ray dimensions)
 ray_mask                # Tensor of size [B, num_original_rays], containing 1 for rays
                         # that produced shading points (valid rays) and 0 for others.
+                        # Contains exactly num_valid_rays 1s.
 
 ```

@@ -211,7 +211,7 @@ class VoxelGrid(object):
 
 
         ray_mask_tensor = torch.max(raypos_mask_tensor, dim=-1)[0] > 0 # B, R
-        R = torch.max(torch.sum(ray_mask_tensor.to(torch.int32))).cpu().numpy()
+        R = torch.max(torch.sum(ray_mask_tensor.to(torch.int32), dim=-1)).cpu().numpy()
         sample_loc_tensor = torch.zeros([self.B, R, max_shading_points_per_ray, 3], dtype=torch.float32, device=device)
         sample_pidx_tensor = torch.full([self.B, R, max_shading_points_per_ray, k], -1, dtype=torch.int32, device=device)
         if R > 0:
@@ -266,10 +266,9 @@ class VoxelGrid(object):
                 )
             
             masked_valid_ray = torch.sum(sample_pidx_tensor.view(self.B, R, -1) >= 0, dim=-1) > 0
-            R = torch.max(torch.sum(masked_valid_ray.to(torch.int32), dim=-1)).cpu().numpy()
             ray_mask_tensor.masked_scatter_(ray_mask_tensor, masked_valid_ray)
             sample_pidx_tensor = torch.masked_select(sample_pidx_tensor, masked_valid_ray[..., None, None].expand(-1, -1, max_shading_points_per_ray, k))
-            sample_pidx_tensor = sample_pidx_tensor.reshape(self.B, R, max_shading_points_per_ray, k)
-            sample_loc_tensor = torch.masked_select(sample_loc_tensor, masked_valid_ray[..., None, None].expand(-1, -1, max_shading_points_per_ray, 3)).reshape(self.B, R, max_shading_points_per_ray, 3)
+            sample_pidx_tensor = sample_pidx_tensor.reshape(-1, max_shading_points_per_ray, k)
+            sample_loc_tensor = torch.masked_select(sample_loc_tensor, masked_valid_ray[..., None, None].expand(-1, -1, max_shading_points_per_ray, 3)).reshape(-1, max_shading_points_per_ray, 3)
         # self.count+=1
         return sample_pidx_tensor, sample_loc_tensor, ray_mask_tensor.to(torch.int8)
