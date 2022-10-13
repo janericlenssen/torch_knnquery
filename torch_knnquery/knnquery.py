@@ -148,7 +148,6 @@ class VoxelGrid(object):
             self.coor_2_occ_tensor,
             self.occ_2_coor_tensor
             )
-        # torch.cuda.synchronize()
         seconds = int(round(time.time() * 1000))
 
         # Assigns each point to an occupied voxel
