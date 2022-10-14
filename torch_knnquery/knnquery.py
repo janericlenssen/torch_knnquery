@@ -220,7 +220,7 @@ class VoxelGrid(object):
             insert_mask = (torch.arange(R.item(), device=device)[None] < num_valid_rays[..., None])[..., None].expand(-1, -1, D)  # B, R, D
 
             raypos = torch.masked_select(raypos, ray_mask_tensor[..., None, None].expand(-1, -1, D, 3))
-            raypos_new = torch.zeros((self.B, R, D, 3), dtype=torch.float32, device=device)
+            raypos_new = torch.zeros((self.B, R, D, 3), dtype=raypos.dtype, device=device)
             raypos_new.masked_scatter_(insert_mask[..., None].expand(-1, -1, -1, 3), raypos)
             raypos = raypos_new
 
@@ -281,6 +281,6 @@ class VoxelGrid(object):
             ray_mask_tensor.masked_scatter_(ray_mask_tensor, masked_valid_ray)
             sample_pidx_tensor = torch.masked_select(sample_pidx_tensor, masked_valid_ray[..., None, None].expand(-1, -1, max_shading_points_per_ray, k))
             sample_pidx_tensor = sample_pidx_tensor.reshape(-1, max_shading_points_per_ray, k)
-            sample_loc_tensor = torch.masked_select(sample_loc_tensor, masked_valid_ray[..., None, None].expand(-1, -1, max_shading_points_per_ray, 3)).reshape(-1, max_shading_points_per_ray, 3)
+            sample_loc_tensor = torch.masked_select(sample_loc_tensor, masked_valid_ray[..., None, None].expand(-1, -1, max_shading_points_per_ray, 3)).reshape(self.B, R, max_shading_points_per_ray, 3)
         # self.count+=1
         return sample_pidx_tensor, sample_loc_tensor, ray_mask_tensor.to(torch.int8)
