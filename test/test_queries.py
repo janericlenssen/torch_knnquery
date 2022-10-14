@@ -49,10 +49,6 @@ def query_keypoints(x: Tensor, kp_pos: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
     indices = indices.view(B, num_rays, max_shading_pts, k)
     values = values.view(B, num_rays, max_shading_pts, k)
     indices[values >= r] = -1
-    #indices = indices[indices.sum(-1) != -k].view(B,num_rays, max_shading_pts, k)
-    #print('shading_loc_manual', shading_loc)
-    #print('distances_manual', values)
-    #print('indices_manual', indices)
 
     return indices, shading_loc, values
 
@@ -70,13 +66,10 @@ def query_keypoints_voxel(voxel_grid, x: Tensor, kp_pos: Tensor) -> Tuple[Tensor
     """
     B, num_rays = x.shape[:2]
     sample_idx, sample_loc, ray_mask = voxel_grid.query(x, k, r, max_shading_pts)
-    #print('indices_vg', sample_idx)
     sample_idx = torch.clamp(sample_idx, min=0).view(-1).long()
     sampled_neighb = torch.index_select(kp_pos, 1, sample_idx).view(B, num_rays, max_shading_pts, k, 3)
     distances =  torch.norm(sampled_neighb - sample_loc[..., None, :], dim=-1)
     sample_idx = sample_idx.view(batch_size, num_rays, max_shading_pts, k)
-    #print('distances_vg', distances)
-    #print('shading_loc_vg', sample_loc)
     
     return sample_idx, sample_loc, distances
 
@@ -118,7 +111,6 @@ def test_knnquery(dtype):
     depth = torch.linspace(-5, 5, num_samples_per_ray)[None, None, :, None].cuda()
 
     raypos_tensor = rays_o + depth * rays_d
-    test = torch.Tensor([2.0006, -5.2593, -0.3121])
 
     
     neighbor_idx, sample_loc, distances = query_keypoints(raypos_tensor, points_tensor)
