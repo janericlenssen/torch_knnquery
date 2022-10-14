@@ -62,8 +62,8 @@ class VoxelGrid(object):
 
         """
         assert points.is_cuda
-        #self.points = points.to(torch.float32)
-        self.points = points
+        self.points = points.contiguous()
+        actual_num_points_per_example = actual_num_points_per_example.contiguous()
         min_xyz, max_xyz = torch.min(points, dim=-2)[0][0], torch.max(points, dim=-2)[0][0]
         #print('max_xyz_b_knn', max_xyz)
         #print('min_xyz_b_knn', min_xyz)
@@ -186,6 +186,7 @@ class VoxelGrid(object):
             max_shading_points_per_ray (int, optional): The maximum number of points per ray for which neighbors are sampled.
                 The first max_shading_points_per_ray samples of each ray that hit occupied voxels return neighbors.
         """
+        raypos = raypos.contiguous()
         device = raypos.device
         R, D = raypos.size(1), raypos.size(2)
         assert k <= 20, "k cannot be greater than 20"
@@ -211,12 +212,22 @@ class VoxelGrid(object):
 
 
         ray_mask_tensor = torch.max(raypos_mask_tensor, dim=-1)[0] > 0 # B, R
-        R = torch.max(torch.sum(ray_mask_tensor.to(torch.int32))).cpu().numpy()
+        num_valid_rays = torch.sum(ray_mask_tensor.to(torch.int32), dim=-1) # B
+        R = torch.max(num_valid_rays).cpu().numpy()
         sample_loc_tensor = torch.zeros([self.B, R, max_shading_points_per_ray, 3], dtype=raypos.dtype, device=device)
         sample_pidx_tensor = torch.full([self.B, R, max_shading_points_per_ray, k], -1, dtype=torch.int32, device=device)
         if R > 0:
-            raypos = torch.masked_select(raypos, ray_mask_tensor[..., None, None].expand(-1, -1, D, 3)).reshape(self.B, R, D, 3)
-            raypos_mask_tensor = torch.masked_select(raypos_mask_tensor, ray_mask_tensor[..., None].expand(-1, -1, D)).reshape(self.B, R, D)
+            insert_mask = (torch.arange(R.item(), device=device)[None] < num_valid_rays[..., None])[..., None].expand(-1, -1, D)  # B, R, D
+
+            raypos = torch.masked_select(raypos, ray_mask_tensor[..., None, None].expand(-1, -1, D, 3))
+            raypos_new = torch.zeros((self.B, R, D, 3), dtype=torch.float32, device=device)
+            raypos_new.masked_scatter_(insert_mask[..., None].expand(-1, -1, -1, 3), raypos)
+            raypos = raypos_new
+
+            raypos_mask_tensor = torch.masked_select(raypos_mask_tensor, ray_mask_tensor[..., None].expand(-1, -1, D))
+            raypos_mask_tensor_new = torch.zeros((self.B, R, D), dtype=torch.int32, device=device)
+            raypos_mask_tensor_new.masked_scatter_(insert_mask, raypos_mask_tensor)
+            raypos_mask_tensor = raypos_mask_tensor_new
             # print("R", R, raypos_tensor.shape, raypos_mask_tensor.shape)
 
             raypos_maskcum = torch.cumsum(raypos_mask_tensor, dim=-1).to(torch.int32)
@@ -265,12 +276,11 @@ class VoxelGrid(object):
                 sample_loc_mask_tensor,
                 sample_pidx_tensor
                 )
-            
+
             masked_valid_ray = torch.sum(sample_pidx_tensor.view(self.B, R, -1) >= 0, dim=-1) > 0
-            R = torch.max(torch.sum(masked_valid_ray.to(torch.int32), dim=-1)).cpu().numpy()
             ray_mask_tensor.masked_scatter_(ray_mask_tensor, masked_valid_ray)
             sample_pidx_tensor = torch.masked_select(sample_pidx_tensor, masked_valid_ray[..., None, None].expand(-1, -1, max_shading_points_per_ray, k))
-            sample_pidx_tensor = sample_pidx_tensor.reshape(self.B, R, max_shading_points_per_ray, k)
-            sample_loc_tensor = torch.masked_select(sample_loc_tensor, masked_valid_ray[..., None, None].expand(-1, -1, max_shading_points_per_ray, 3)).reshape(self.B, R, max_shading_points_per_ray, 3)
+            sample_pidx_tensor = sample_pidx_tensor.reshape(-1, max_shading_points_per_ray, k)
+            sample_loc_tensor = torch.masked_select(sample_loc_tensor, masked_valid_ray[..., None, None].expand(-1, -1, max_shading_points_per_ray, 3)).reshape(-1, max_shading_points_per_ray, 3)
         # self.count+=1
         return sample_pidx_tensor, sample_loc_tensor, ray_mask_tensor.to(torch.int8)
