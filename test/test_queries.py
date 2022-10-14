@@ -92,16 +92,10 @@ def test_knnquery(dtype):
     
 
     points_tensor = 15 * (torch.rand(batch_size, num_points, 3).cuda() -0.5)
-    points_tensor.to(dtype)
     num_tensor = num_points * torch.ones(batch_size, dtype=torch.int).cuda()
 
     
-    voxel_grid.set_pointset(
-        points=points_tensor,                       # Tensor of size [B, max_num_points, 3] containing 
-                                                    # B point clouds.
-        actual_num_points_per_example=num_tensor   # Tensor of size [B] containing the actual
-                                                    # num_points<=max_num_points for each point cloud.
-    )
+
     
 
     rays_o = 3*(torch.rand(batch_size, num_rays, num_samples_per_ray, 3).cuda()-0.5)
@@ -111,12 +105,21 @@ def test_knnquery(dtype):
     depth = torch.linspace(-5, 5, num_samples_per_ray)[None, None, :, None].cuda()
 
     raypos_tensor = rays_o + depth * rays_d
-
     
     neighbor_idx, sample_loc, distances = query_keypoints(raypos_tensor, points_tensor)
     distances = distances.sort(dim=-1)[0]
     sample_loc = sample_loc.sort(dim=-1)[0]
     neighbor_idx = neighbor_idx.sort(dim=-1)[0]
+    
+    raypos_tensor = raypos_tensor.to(dtype)
+    points_tensor = points_tensor.to(dtype)
+
+    voxel_grid.set_pointset(
+        points=points_tensor,                       # Tensor of size [B, max_num_points, 3] containing 
+                                                    # B point clouds.
+        actual_num_points_per_example=num_tensor   # Tensor of size [B] containing the actual
+                                                    # num_points<=max_num_points for each point cloud.
+    )
 
     neighbor_idx_2, sample_loc_2, distances_2 = query_keypoints_voxel(voxel_grid, raypos_tensor, points_tensor)
     distances_2 = distances_2.sort(dim=-1)[0]
