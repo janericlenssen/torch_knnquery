@@ -62,7 +62,7 @@ class VoxelGrid(object):
 
         """
         assert points.is_cuda
-        self.points = points.contiguous()
+        self.points = points
         actual_num_points_per_example = actual_num_points_per_example.contiguous()
         min_xyz, max_xyz = torch.min(points, dim=-2)[0][0], torch.max(points, dim=-2)[0][0]
         #print('max_xyz_b_knn', max_xyz)
@@ -186,7 +186,6 @@ class VoxelGrid(object):
             max_shading_points_per_ray (int, optional): The maximum number of points per ray for which neighbors are sampled.
                 The first max_shading_points_per_ray samples of each ray that hit occupied voxels return neighbors.
         """
-        raypos = raypos.contiguous()
         device = raypos.device
         R, D = raypos.size(1), raypos.size(2)
         assert k <= 20, "k cannot be greater than 20"
