@@ -62,9 +62,8 @@ class VoxelGrid(object):
 
         """
         assert points.is_cuda
-        self.points = points.to(torch.float32).contiguous()
+        self.points = points.contiguous()
         actual_num_points_per_example = actual_num_points_per_example.contiguous()
-        
         min_xyz, max_xyz = torch.min(points, dim=-2)[0][0], torch.max(points, dim=-2)[0][0]
         #print('max_xyz_b_knn', max_xyz)
         #print('min_xyz_b_knn', min_xyz)
@@ -79,7 +78,7 @@ class VoxelGrid(object):
         min_xyz = min_xyz - self.scaled_vsize * self.kernel_size / 2
         max_xyz = max_xyz + self.scaled_vsize * self.kernel_size / 2
 
-        self.ranges = torch.cat([min_xyz, max_xyz], dim=-1)
+        self.ranges = torch.cat([min_xyz, max_xyz], dim=-1).float()
         # print("ranges_np",ranges_np)
         vdim_np = (max_xyz - min_xyz) / self.vsize
 
@@ -149,7 +148,6 @@ class VoxelGrid(object):
             self.coor_2_occ_tensor,
             self.occ_2_coor_tensor
             )
-        # torch.cuda.synchronize()
         seconds = int(round(time.time() * 1000))
 
         # Assigns each point to an occupied voxel
@@ -194,7 +192,7 @@ class VoxelGrid(object):
         assert k <= 20, "k cannot be greater than 20"
 
         raypos_mask_tensor = torch.zeros([self.B, R, D], dtype=torch.int32, device=device)
-        raypos = raypos.to(torch.float32)
+        #raypos = raypos.to(torch.float32)
         # Check which query positions actually hit occupied voxels.
         # Output: 
         # # raypos_mask_tensor contains binary indicators for each query position
@@ -216,7 +214,7 @@ class VoxelGrid(object):
         ray_mask_tensor = torch.max(raypos_mask_tensor, dim=-1)[0] > 0 # B, R
         num_valid_rays = torch.sum(ray_mask_tensor.to(torch.int32), dim=-1) # B
         R = torch.max(num_valid_rays).cpu().numpy()
-        sample_loc_tensor = torch.zeros([self.B, R, max_shading_points_per_ray, 3], dtype=torch.float32, device=device)
+        sample_loc_tensor = torch.zeros([self.B, R, max_shading_points_per_ray, 3], dtype=raypos.dtype, device=device)
         sample_pidx_tensor = torch.full([self.B, R, max_shading_points_per_ray, k], -1, dtype=torch.int32, device=device)
         if R > 0:
             insert_mask = (torch.arange(R.item(), device=device)[None] < num_valid_rays[..., None])[..., None].expand(-1, -1, D)  # B, R, D
@@ -241,6 +239,7 @@ class VoxelGrid(object):
             # Output: 
             # sample_loc_tensor contains the actual ray queries for which neighbors should be found
             # sample_loc_mask_tensor contains 1 if the same index in sample_loc_tensor contains a valid sample point
+
             self.get_shadingloc(
                 raypos,  # [1, 2048, 400, 3]
                 raypos_mask_tensor,

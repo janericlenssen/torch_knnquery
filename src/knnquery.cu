@@ -19,7 +19,6 @@
 
 // --- Kernels --- //
 
-
 template <typename scalar_t>
 __global__ void claim_occ_kernel(
     const scalar_t* in_data,   // B * N * 3
@@ -143,15 +142,15 @@ __global__ void fill_occ2pnts_kernel(
     int i_pt = index - N * i_batch;
     if (i_pt < in_actual_numpoints[i_batch]) {
         int coor[3];
-        const scalar_t *p_pt = in_data + index * 3;
-        coor[0] = (int) floor((p_pt[0] - d_coord_shift[0]) / d_voxel_size[0]);
-        coor[1] = (int) floor((p_pt[1] - d_coord_shift[1]) / d_voxel_size[1]);
-        coor[2] = (int) floor((p_pt[2] - d_coord_shift[2]) / d_voxel_size[2]);
+        //const scalar_t *p_pt = in_data + index * 3;
+        coor[0] = (int) floor((in_data[index*3 + 0] - d_coord_shift[0]) / d_voxel_size[0]);
+        coor[1] = (int) floor((in_data[index*3 + 1] - d_coord_shift[1]) / d_voxel_size[1]);
+        coor[2] = (int) floor((in_data[index*3 + 2] - d_coord_shift[2]) / d_voxel_size[2]);
         if (coor[0] < 0 || coor[0] >= d_grid_size[0] || coor[1] < 0 || coor[1] >= d_grid_size[1] || coor[2] < 0 || coor[2] >= d_grid_size[2]) { return; }
         int coor_indx_b = i_batch * grid_size_vol + coor[0] * (d_grid_size[1] * d_grid_size[2]) + coor[1] * d_grid_size[2] + coor[2];
         
         int voxel_idx = coor_2_occ[coor_indx_b];
-        if (voxel_idx > 0) {  // found an claimed coor2occ
+        if (voxel_idx >= 0) {  // found an claimed coor2occ
             int occ_indx_b = i_batch * max_o + voxel_idx;
             int tmp = atomicAdd(occ_numpnts + occ_indx_b, 1); // increase the counter, return old counter
             if (tmp < P) {
@@ -306,7 +305,7 @@ __global__ void query_along_ray_kernel(
                 }
             }
         }
-        if (kid >= K) break;
+        //if (kid >= K) break;
     }
 }
 
