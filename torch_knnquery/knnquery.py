@@ -62,6 +62,7 @@ class VoxelGrid(object):
 
         """
         assert points.is_cuda
+        assert points.is_contiguous()
         self.points = points
         actual_num_points_per_example = actual_num_points_per_example.contiguous()
         min_xyz, max_xyz = torch.min(points, dim=-2)[0][0], torch.max(points, dim=-2)[0][0]
@@ -189,6 +190,8 @@ class VoxelGrid(object):
         device = raypos.device
         R, D = raypos.size(1), raypos.size(2)
         assert k <= 20, "k cannot be greater than 20"
+        assert raypos.is_contiguous()
+        assert raypos.is_cuda
 
         raypos_mask_tensor = torch.zeros([self.B, R, D], dtype=torch.int32, device=device)
         #raypos = raypos.to(torch.float32)
