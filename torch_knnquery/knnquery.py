@@ -281,6 +281,8 @@ class VoxelGrid(object):
             ray_mask_tensor.masked_scatter_(ray_mask_tensor, masked_valid_ray)
             sample_pidx_tensor = torch.masked_select(sample_pidx_tensor, masked_valid_ray[..., None, None].expand(-1, -1, max_shading_points_per_ray, k))
             sample_pidx_tensor = sample_pidx_tensor.reshape(-1, max_shading_points_per_ray, k)
-            sample_loc_tensor = torch.masked_select(sample_loc_tensor, masked_valid_ray[..., None, None].expand(-1, -1, max_shading_points_per_ray, 3)).reshape(self.B, R, max_shading_points_per_ray, 3)
+            sample_loc_tensor = torch.masked_select(sample_loc_tensor, masked_valid_ray[..., None, None].expand(-1, -1, max_shading_points_per_ray, 3)).reshape(-1, max_shading_points_per_ray, 3)
+            
+
         # self.count+=1
         return sample_pidx_tensor, sample_loc_tensor, ray_mask_tensor.to(torch.int8)

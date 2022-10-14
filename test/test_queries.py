@@ -126,7 +126,7 @@ def test_knnquery(dtype):
     sample_loc_2 = sample_loc_2.sort(dim=-1)[0]
     neighbor_idx_2 = neighbor_idx_2.sort(dim=-1)[0]
 
-    assert_almost_equal(distances.cpu().numpy(), distances_2.cpu().numpy(), decimal=5)
-    assert_almost_equal(sample_loc.cpu().numpy(), sample_loc_2.cpu().numpy(), decimal=5)
-    assert torch.all(neighbor_idx == neighbor_idx_2)
+    assert_almost_equal(distances.squeeze().cpu().numpy(), distances_2.squeeze().cpu().numpy(), decimal=5)
+    assert_almost_equal(sample_loc.squeeze().cpu().numpy(), sample_loc_2.squeeze().cpu().numpy(), decimal=5)
+    assert torch.all(neighbor_idx.squeeze() == neighbor_idx_2.squeeze())
     
