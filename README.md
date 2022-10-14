@@ -6,10 +6,12 @@ Based on the official implementation given in (https://github.com/Xharlie/pointn
 
 Given a set of points, a voxel grid is constructed. This voxel grid can be used to efficienty obtain k-NN points for a set of rays, shot through the scene. Implementation is CUDA only.
 
-In comparison to the original implementation, it is:
+Differences to the original implementation:
 - standalone
 - implemented as a PyTorch extension instead of using pycuda, directly working on `torch.Tensor` objects
-- Provides a more pythonic interface.
+- provides a more pythonic interface.
+- tests
+- some bugfixes
 
 ## Installation
 
