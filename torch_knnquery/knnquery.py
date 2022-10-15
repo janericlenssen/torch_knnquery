@@ -17,7 +17,6 @@ class VoxelGrid(object):
         max_points_per_voxel (int): Maximum number of points in each voxel
         max_occ_voxels_per_example (float): Maximum of occupied voxels for each example
         ranges (Tuple[int], optional): 
-
     """
     def __init__(
         self,
@@ -59,12 +58,10 @@ class VoxelGrid(object):
             points (torch.Tensor): Tensor of size [B, max_num_points, 3] containing B point clouds.
             actual_num_points_per_example (torch.Tensor): Tensor of size [B] containing the 
                 actual num_points<=max_num_points for each point cloud.
-
         """
         assert points.is_cuda
-        assert points.is_contiguous()
+        #self.points = points.to(torch.float32)
         self.points = points
-        actual_num_points_per_example = actual_num_points_per_example.contiguous()
         min_xyz, max_xyz = torch.min(points, dim=-2)[0][0], torch.max(points, dim=-2)[0][0]
         #print('max_xyz_b_knn', max_xyz)
         #print('min_xyz_b_knn', min_xyz)
@@ -190,14 +187,12 @@ class VoxelGrid(object):
         device = raypos.device
         R, D = raypos.size(1), raypos.size(2)
         assert k <= 20, "k cannot be greater than 20"
-        assert raypos.is_contiguous()
-        assert raypos.is_cuda
 
-        raypos_mask_tensor = torch.zeros([self.B, R, D], dtype=torch.int32, device=device)
+        sample_mask_tensor = torch.zeros([self.B, R, D], dtype=torch.int32, device=device)
         #raypos = raypos.to(torch.float32)
-        # Check which query positions actually hit occupied voxels.
+        # Check which sample positions actually hit occupied voxels.
         # Output: 
-        # # raypos_mask_tensor contains binary indicators for each query position
+        # # sample_mask_tensor contains binary indicators for each sample position
         self.create_raypos_mask(
             raypos,  # [1, 2048, 400, 3]
             self.coor_occ_tensor,  # [1, 2048, 400, 3]
@@ -208,32 +203,32 @@ class VoxelGrid(object):
             self.d_coord_shift,
             self.scaled_vdim,
             self.scaled_vsize,
-            raypos_mask_tensor
+            sample_mask_tensor
         )
 
 
 
-        ray_mask_tensor = torch.max(raypos_mask_tensor, dim=-1)[0] > 0 # B, R
+        ray_mask_tensor = torch.max(sample_mask_tensor, dim=-1)[0] > 0 # B, R
         num_valid_rays = torch.sum(ray_mask_tensor.to(torch.int32), dim=-1) # B
         R = torch.max(num_valid_rays).cpu().numpy()
         sample_loc_tensor = torch.zeros([self.B, R, max_shading_points_per_ray, 3], dtype=raypos.dtype, device=device)
         sample_pidx_tensor = torch.full([self.B, R, max_shading_points_per_ray, k], -1, dtype=torch.int32, device=device)
         if R > 0:
-            insert_mask = (torch.arange(R.item(), device=device)[None] < num_valid_rays[..., None])[..., None].expand(-1, -1, D)  # B, R, D
+            insert_mask = torch.arange(R.item(), device=device)[None] < num_valid_rays[..., None]
 
-            raypos = torch.masked_select(raypos, ray_mask_tensor[..., None, None].expand(-1, -1, D, 3))
+            raypos = raypos[ray_mask_tensor]
             raypos_new = torch.zeros((self.B, R, D, 3), dtype=raypos.dtype, device=device)
-            raypos_new.masked_scatter_(insert_mask[..., None].expand(-1, -1, -1, 3), raypos)
+            raypos_new[insert_mask] = raypos
             raypos = raypos_new
 
-            raypos_mask_tensor = torch.masked_select(raypos_mask_tensor, ray_mask_tensor[..., None].expand(-1, -1, D))
-            raypos_mask_tensor_new = torch.zeros((self.B, R, D), dtype=torch.int32, device=device)
-            raypos_mask_tensor_new.masked_scatter_(insert_mask, raypos_mask_tensor)
-            raypos_mask_tensor = raypos_mask_tensor_new
+            sample_mask_tensor = sample_mask_tensor[ray_mask_tensor]
+            sample_mask_tensor_new = torch.zeros((self.B, R, D), dtype=torch.int32, device=device)
+            sample_mask_tensor_new[insert_mask] = sample_mask_tensor
+            sample_mask_tensor = sample_mask_tensor_new
             # print("R", R, raypos_tensor.shape, raypos_mask_tensor.shape)
 
-            raypos_maskcum = torch.cumsum(raypos_mask_tensor, dim=-1).to(torch.int32)
-            raypos_mask_tensor = (raypos_mask_tensor * raypos_maskcum * (raypos_maskcum <= max_shading_points_per_ray)) - 1
+            raypos_maskcum = torch.cumsum(sample_mask_tensor, dim=-1).to(torch.int32)
+            sample_mask_tensor = (sample_mask_tensor * raypos_maskcum * (raypos_maskcum <= max_shading_points_per_ray)) - 1
             sample_loc_mask_tensor = torch.zeros([self.B, R, max_shading_points_per_ray], dtype=torch.int32, device=device)
 
             # For each ray query that hits occupied voxels, 
@@ -244,7 +239,7 @@ class VoxelGrid(object):
 
             self.get_shadingloc(
                 raypos,  # [1, 2048, 400, 3]
-                raypos_mask_tensor,
+                sample_mask_tensor,
                 self.B,
                 R,
                 D,
@@ -280,11 +275,26 @@ class VoxelGrid(object):
                 )
 
             masked_valid_ray = torch.sum(sample_pidx_tensor.view(self.B, R, -1) >= 0, dim=-1) > 0
+            masked_valid_samples = torch.sum(sample_pidx_tensor.view(self.B, R, max_shading_points_per_ray, -1) >= 0, dim=-1) > 0
+            num_valid_points_per_ray = masked_valid_samples.sum(-1, keepdim=True)
+            valid_pts_mask_out = torch.ones((self.B, R, max_shading_points_per_ray), dtype=torch.bool, device=device)
+            cumsum = torch.cumsum(valid_pts_mask_out, dim=-1)
+            valid_pts_mask_out = cumsum <= num_valid_points_per_ray
+
+            shading_loc = torch.zeros((self.B, R, max_shading_points_per_ray, 3), dtype=sample_loc_tensor.dtype, device=device)
+            shading_loc[valid_pts_mask_out] = sample_loc_tensor[masked_valid_samples]          
+
+            indices = torch.zeros((self.B, R, max_shading_points_per_ray, k), dtype=torch.int32, device=device)
+            indices[:] = -1
+            indices[valid_pts_mask_out] = sample_pidx_tensor[masked_valid_samples]
+
             ray_mask_tensor.masked_scatter_(ray_mask_tensor, masked_valid_ray)
-            sample_pidx_tensor = torch.masked_select(sample_pidx_tensor, masked_valid_ray[..., None, None].expand(-1, -1, max_shading_points_per_ray, k))
-            sample_pidx_tensor = sample_pidx_tensor.reshape(-1, max_shading_points_per_ray, k)
-            sample_loc_tensor = torch.masked_select(sample_loc_tensor, masked_valid_ray[..., None, None].expand(-1, -1, max_shading_points_per_ray, 3)).reshape(-1, max_shading_points_per_ray, 3)
+            sample_pidx_tensor = indices[masked_valid_ray]
+            #sample_idx_out = torch.tensor()
+            sample_pidx_tensor = sample_pidx_tensor.view(-1, max_shading_points_per_ray, k)
+            sample_loc_tensor = shading_loc[masked_valid_ray]
             
 
         # self.count+=1
         return sample_pidx_tensor, sample_loc_tensor, ray_mask_tensor.to(torch.int8)
+
