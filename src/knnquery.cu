@@ -139,8 +139,8 @@ __global__ void fill_occ2pnts_kernel(
     int index = blockIdx.x * blockDim.x + threadIdx.x; // index of gpu thread
     int i_batch = index / N;  // index of batch
     if (i_batch >= B) { return; }
-    int i_pt = index - N * i_batch;
-    if (i_pt < in_actual_numpoints[i_batch]) {
+    int i_pt = index;
+    if (i_pt - N * i_batch < in_actual_numpoints[i_batch]) {
         int coor[3];
         //const scalar_t *p_pt = in_data + index * 3;
         coor[0] = (int) floor((in_data[index*3 + 0] - d_coord_shift[0]) / d_voxel_size[0]);
@@ -200,20 +200,19 @@ template <typename scalar_t>
 __global__ void get_shadingloc_kernel(
     const scalar_t *raypos,    // [B, 2048, 400, 3]
     const int *raypos_mask,    // B, R, D
-    const int B,       // 3
-    const int R,       // 3
-    const int D,       // 3
-    const int SR,       // 3
+    const int R_valid,       // 3
+    const int total_samples_per_ray,       // 3
+    const int max_samples_per_ray,       // 3
     scalar_t *sample_loc,       // B * R * SR * 3
     int *sample_loc_mask       // B * R * SR
 ) {
     int index = blockIdx.x * blockDim.x + threadIdx.x; // index of gpu thread
-    int i_batch = index / (R * D);  // index of batch
-    if (i_batch >= B) { return; }
+    if(index>=R_valid*total_samples_per_ray) { return; }
+
     int temp = raypos_mask[index];
     if (temp >= 0) {
-        int r = (index - i_batch * R * D) / D;
-        int loc_inds = i_batch * R * SR + r * SR + temp;
+        int r = index / total_samples_per_ray;
+        int loc_inds = r * max_samples_per_ray + temp;
         sample_loc[loc_inds * 3] = raypos[index * 3];
         sample_loc[loc_inds * 3 + 1] = raypos[index * 3 + 1];
         sample_loc[loc_inds * 3 + 2] = raypos[index * 3 + 2];
@@ -225,9 +224,9 @@ __global__ void get_shadingloc_kernel(
 template <typename scalar_t>
 __global__ void query_along_ray_kernel(
     const scalar_t* in_data,   // B * N * 3
-    const int B,
-    const int SR,               // num. samples along each ray e.g., 128
-    const int R,               // e.g., 1024
+    const int *ray_to_batch_indices,
+    const int R_valid,
+    const int samples_per_ray,               // num. samples along each ray e.g., 128
     const int max_o,
     const int P,
     const int K,                // num.  neighbors
@@ -245,18 +244,17 @@ __global__ void query_along_ray_kernel(
     int *sample_pidx       // B * R * SR * K
 ) {
     int index =  blockIdx.x * blockDim.x + threadIdx.x; // index of gpu thread
-    int i_batch = index / (R * SR);  // index of batch
-    if (i_batch >= B || sample_loc_mask[index] <= 0) { return; }
+    if(index>=R_valid*samples_per_ray) { return; }
+
+    int ray = index / samples_per_ray;
+    int i_batch = ray_to_batch_indices[ray];  // index of batch
+    if (sample_loc_mask[index] <= 0) { return; }
     scalar_t centerx = sample_loc[index * 3];
     scalar_t centery = sample_loc[index * 3 + 1];
     scalar_t centerz = sample_loc[index * 3 + 2];
     int frustx = (int) floor((centerx - d_coord_shift[0]) / d_voxel_size[0]);
     int frusty = (int) floor((centery - d_coord_shift[1]) / d_voxel_size[1]);
     int frustz = (int) floor((centerz - d_coord_shift[2]) / d_voxel_size[2]);
-                        
-    centerx = sample_loc[index * 3];
-    centery = sample_loc[index * 3 + 1];
-    centerz = sample_loc[index * 3 + 2];
                         
     int kid = 0, far_ind = 0, coor_z, coor_y, coor_x;
     scalar_t far2 = 0.0;
@@ -480,10 +478,9 @@ void create_raypos_mask(
 void get_shadingloc(
   at::Tensor raypos_tensor,
   at::Tensor raypos_mask_tensor,
-  int B,
-  int R,
-  int D,
-  int samples_per_ray,
+  int R_valid,
+  int total_samples_per_ray,
+  int max_samples_per_ray,
   at::Tensor sample_loc_tensor,
   at::Tensor sample_loc_mask_tensor
 ) {
@@ -492,16 +489,15 @@ void get_shadingloc(
   CHECK_INPUT(sample_loc_tensor);
   CHECK_INPUT(sample_loc_mask_tensor);
 
-  int units = B * R * D;
+  int units = R_valid * total_samples_per_ray;
 
   AT_DISPATCH_FLOATING_TYPES(raypos_tensor.type(), "get_shadingloc_kernel", [&] {
     get_shadingloc_kernel<scalar_t><<<BLOCKS(units), THREADS>>>(
       raypos_tensor.data<scalar_t>(),
       raypos_mask_tensor.data<int>(),
-      B,
-      R,
-      D,
-      samples_per_ray,
+      R_valid,
+      total_samples_per_ray,
+      max_samples_per_ray,
       sample_loc_tensor.data<scalar_t>(),
       sample_loc_mask_tensor.data<int>()
     );
@@ -511,9 +507,9 @@ void get_shadingloc(
 
 void query_along_ray(
   at::Tensor points,
-  int B,
+  at::Tensor ray_to_batch_indices,
+  int R_valid,
   int samples_per_ray,
-  int R,
   int max_o,
   int P,
   int num_neighbors,
@@ -531,6 +527,7 @@ void query_along_ray(
   at::Tensor sample_pidx_tensor
 ) {
   CHECK_INPUT(points);
+  CHECK_INPUT(ray_to_batch_indices);
   CHECK_INPUT(d_coord_shift);
   CHECK_INPUT(scaled_vsize);
   CHECK_INPUT(scaled_vdim);
@@ -542,14 +539,14 @@ void query_along_ray(
   CHECK_INPUT(sample_loc_mask_tensor);
   CHECK_INPUT(sample_pidx_tensor);
 
-  int units = B * R * samples_per_ray;
+  int units = R_valid * samples_per_ray;
 
   AT_DISPATCH_FLOATING_TYPES(points.type(), "query_along_ray_kernel", [&] {
     query_along_ray_kernel<scalar_t><<<BLOCKS(units), THREADS>>>(
       points.data<scalar_t>(),
-      B,
+      ray_to_batch_indices.data<int>(),
+      R_valid,
       samples_per_ray,
-      R,
       max_o,
       P,
       num_neighbors,
