@@ -10,7 +10,7 @@ Differences to the original implementation:
 - standalone
 - implemented as a PyTorch extension instead of using pycuda, directly working on `torch.Tensor` objects
 - provides a more pythonic interface.
-- tests
+- has batch support
 - some bugfixes
 
 ## Installation
