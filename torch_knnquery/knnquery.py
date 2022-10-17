@@ -280,26 +280,8 @@ class VoxelGrid(object):
             R_valid = ray_mask_2.sum().item()
             ray_mask_2 = ray_mask_2.bool()
             sample_loc_tensor = sample_loc_tensor[ray_mask_2, :, :]    
-
             sample_pidx_tensor = sample_pidx_tensor[ray_mask_2, :, :]
 
-
-            # Bring valid sample points to front (optional)
-            sample_mask = torch.sum(sample_pidx_tensor.view(R_valid, max_shading_points_per_ray, -1) >= 0, dim=-1) > 0
-            num_valid_points_per_ray = sample_mask.sum(-1, keepdim=True)
-
-            valid_pts_mask_out = torch.ones((R_valid, max_shading_points_per_ray), dtype=torch.bool, device=device)
-            cumsum = torch.cumsum(valid_pts_mask_out, dim=-1)
-            valid_pts_mask_out = cumsum <= num_valid_points_per_ray
-
-            sample_loc_reordered = torch.zeros((R_valid, max_shading_points_per_ray, 3), dtype=sample_loc_tensor.dtype, device=device)
-            sample_loc_reordered[valid_pts_mask_out] = sample_loc_tensor[sample_mask]          
-
-            sample_pidx_reordered = torch.zeros((R_valid, max_shading_points_per_ray, k), dtype=torch.int32, device=device)
-            sample_pidx_reordered[:] = -1
-            sample_pidx_reordered[valid_pts_mask_out] = sample_pidx_tensor[sample_mask]
-            sample_pidx_tensor = sample_pidx_reordered
-            sample_loc_tensor = sample_loc_reordered
 
             # compute full ray mask
             ray_mask_1[ray_mask_1.clone()] = ray_mask_2.clone()
