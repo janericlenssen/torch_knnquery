@@ -69,10 +69,10 @@ sample_point_indices, sample_locations, ray_mask = voxel_grid.query(
 
 Returns are:
 ```python
-sample_point_indices    # Tensor of size [num_valid_rays, max_shading_points_per_ray, k]
+sample_point_indices    # Tensor of size [total_num_valid_rays, max_shading_points_per_ray, k]
                         # containing the indices of the k nearest neighbors in points_tensor
                         # for each of the B point clouds (flattened batch and ray dimensions)
-sample_locations        # Tensor of size [num_valid_rays, max_shading_points_per_ray, 3]
+sample_locations        # Tensor of size [total_num_valid_rays, max_shading_points_per_ray, 3]
                         # containing the positions of the used shading points for each
                         # of the B point clouds (flattened batch and ray dimensions)
 ray_mask                # Tensor of size [B, num_original_rays], containing 1 for rays
@@ -80,3 +80,14 @@ ray_mask                # Tensor of size [B, num_original_rays], containing 1 fo
                         # Contains exactly num_valid_rays 1s.
 
 ```
+
+In case `B>1`, the indices and locations can be recovered into a dense format by
+```python
+dense_indices = torch.zeros((B, num_original_rays, max_shading_points_per_ray, k), dtype=sample_point_indices.dtype, device=sample_point_indices.device)
+dense_indices[:] = -1
+dense_indices[ray_mask] = sample_point_indices
+
+dense_locations = torch.zeros((B, num_original_rays, max_shading_points_per_ray, 3), dtype=sample_locations.dtype, device=sample_locations.device)
+dense_locations[ray_mask] = sample_locations
+```
+if needed.
