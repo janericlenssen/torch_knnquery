@@ -81,7 +81,7 @@ ray_mask                # Tensor of size [B, num_original_rays], containing 1 fo
 
 ```
 
-In case `B>1`, the indices and locations can be recovered into a dense format by
+The sparse indices and locations can be recovered into a dense format by
 ```python
 dense_indices = torch.zeros((B, num_original_rays, max_shading_points_per_ray, k), dtype=torch.int32, device=device)
 dense_indices[:] = -1
