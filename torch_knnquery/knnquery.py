@@ -286,8 +286,8 @@ class VoxelGrid(object):
 
             # compute full ray mask
             ray_mask_1[ray_mask_1.clone()] = ray_mask_2.clone()
-            ray_mask_1 = ray_mask_1.view(self.B, R)
-            
+        
+        ray_mask_1 = ray_mask_1.view(self.B, R)
 
         # self.count+=1
         return sample_pidx_tensor, sample_loc_tensor, ray_mask_1.to(torch.int8)
