@@ -220,6 +220,9 @@ class VoxelGrid(object):
 
         ray_mask_1 = torch.max(sample_mask_tensor, dim=-1)[0] > 0 # B* R
         R_valid = torch.sum(ray_mask_1.to(torch.int32)).item()
+        
+        sample_loc_tensor = torch.zeros([R_valid, max_shading_points_per_ray, 3], dtype=raypos.dtype, device=device)
+        sample_pidx_tensor = torch.full([R_valid, max_shading_points_per_ray, k], -1, dtype=torch.int32, device=device)
 
         if R_valid > 0:
             ray_to_batch_indices = ray_to_batch_indices[ray_mask_1]
@@ -231,7 +234,6 @@ class VoxelGrid(object):
             # Output: 
             # sample_loc_tensor contains the actual ray queries for which neighbors should be found
             # sample_loc_mask_tensor contains 1 if the same index in sample_loc_tensor contains a valid sample point
-            sample_loc_tensor = torch.zeros([R_valid, max_shading_points_per_ray, 3], dtype=raypos.dtype, device=device)
             sample_loc_mask_tensor = torch.zeros([R_valid, max_shading_points_per_ray], dtype=torch.int32, device=device)
             raypos_maskcum = torch.cumsum(sample_mask_tensor, dim=-1).to(torch.int32)
             sample_mask_tensor =  sample_mask_tensor * raypos_maskcum * (raypos_maskcum <= max_shading_points_per_ray) - 1
@@ -251,7 +253,6 @@ class VoxelGrid(object):
             # sample_pidx_tensor: for each entry in sample_loc_tensor, contains the indices of found neighbors
 
             radius_limit = radius_limit_scale * max(self.vsize_tup[0], self.vsize_tup[1])
-            sample_pidx_tensor = torch.full([R_valid, max_shading_points_per_ray, k], -1, dtype=torch.int32, device=device)
 
             self.query_along_ray(
                 self.points,
