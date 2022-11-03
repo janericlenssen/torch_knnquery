@@ -2,14 +2,14 @@
 
 This is an inoffical implementation of the voxel grid datastructure for k-nearest-neighbor ray queries presented in [Xu et al. Point-NeRF: Point-based Neural Radiance Fields](https://arxiv.org/abs/2201.08845).
 
-Based on the official implementation given in (https://github.com/Xharlie/pointnerf).
+Based on the implementation given in (https://github.com/Xharlie/pointnerf).
 
-Given a set of points, a voxel grid is constructed. This voxel grid can be used to efficienty obtain k-NN points for a set of rays, shot through the scene. Implementation is CUDA only.
+Given a set of points, a voxel grid is constructed. This voxel grid can be used to efficiently obtain k-NN points for samples along rays, shot through the scene. Implementation is CUDA only.
 
 Differences to the original implementation:
 - standalone
 - implemented as a PyTorch extension instead of using pycuda, directly working on `torch.Tensor` objects
-- provides a more pythonic interface.
+- clean interface
 - has batch support
 - some bugfixes
 
