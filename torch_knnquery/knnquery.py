@@ -8,7 +8,7 @@ else:
     raise NotImplementedError('torch_knnquery only supported with CUDA')
 
 
-class VoxelGrid(object):
+class VoxelGrid(torch.nn.Module):
     r""" Defines a Voxel Grid object in which points can be inserted and then queried.
     Args:
         voxel_size (Tuple[float]): Tuple of size 3, specifying x, y, z voxel grid dimensions.
@@ -27,16 +27,17 @@ class VoxelGrid(object):
         max_occ_voxels_per_example: float,
         ranges: Optional[Tuple[int]] = None,
         ):
+        super(VoxelGrid, self).__init__()
         self.vsize_tup = voxel_size
-        self.vscale = torch.Tensor(voxel_scale).to(torch.float32).cuda()
-        self.vsize = torch.Tensor(voxel_size).to(torch.float32).cuda()
+        self.register_buffer('vscale', torch.tensor(voxel_scale, dtype=torch.float32), persistent=False)
+        self.register_buffer('vsize', torch.tensor(voxel_size, dtype=torch.float32), persistent=False)
 
-        self.scaled_vsize = (self.vsize * self.vscale).cuda()
-        self.kernel_size = torch.Tensor(kernel_size).to(torch.int32).cuda()
+        self.register_buffer('scaled_vsize', self.vscale * self.vsize, persistent=False)
+        self.register_buffer('kernel_size', torch.tensor(kernel_size, dtype=torch.int32), persistent=False)
         self.P = max_points_per_voxel
         self.max_o = max_occ_voxels_per_example
-        self.ranges = torch.Tensor(ranges).to(torch.float32).cuda()
-        self.ranges_original = self.ranges
+        self.register_buffer('ranges', torch.tensor(ranges, dtype=torch.float32), persistent=False)
+        self.register_buffer('ranges_original', torch.tensor(ranges, dtype=torch.float32), persistent=False)
         self.kMaxThreadsPerBlock = 1024
 
         # Get C++ functions
