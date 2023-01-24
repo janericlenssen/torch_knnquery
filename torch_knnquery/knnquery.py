@@ -63,14 +63,10 @@ class VoxelGrid(torch.nn.Module):
         assert points.is_cuda
         #self.points = points.to(torch.float32)
         self.points = points
-        min_xyz, max_xyz = torch.min(points, dim=-2)[0][0], torch.max(points, dim=-2)[0][0]
-        #print('max_xyz_b_knn', max_xyz)
-        #print('min_xyz_b_knn', min_xyz)
+        min_xyz, max_xyz = torch.min(points.flatten(0,1), dim=0)[0], torch.max(points.flatten(0,1), dim=0)[0]
+
         self.B, self.N = points.shape[0], points.shape[1]
         if self.ranges_original is not None:
-            # print("min_xyz", min_xyz.shape)
-            # print("max_xyz", max_xyz.shape)
-            # print("ranges", ranges)
             min_xyz = torch.max(torch.stack([min_xyz, self.ranges_original[:3]], dim=0), dim=0)[0]
             max_xyz = torch.min(torch.stack([max_xyz, self.ranges_original[3:]], dim=0), dim=0)[0]
 
@@ -84,13 +80,6 @@ class VoxelGrid(torch.nn.Module):
         self.scaled_vdim = torch.ceil(vdim_np / self.vscale).type(torch.int32)
         self.scaled_vdim_np = self.scaled_vdim.cpu().numpy()
 
-        #print('vscale_knn', self.vscale)
-        #print('vdim_np_knn', vdim_np)
-        #print('max_xyz_knn', max_xyz)
-        #print('min_xyz_knn', min_xyz)
-        #print('scaled_vdim_knn', self.scaled_vdim_np)
-        #print('scaled_vsize_knn', self.scaled_vsize)
-        #print('ranges_knn',  self.ranges)
 
         
         self.pixel_size = self.scaled_vdim[0].item() * self.scaled_vdim[1].item()
@@ -220,6 +209,7 @@ class VoxelGrid(torch.nn.Module):
         raypos = raypos.view(self.B*R, D, 3)
 
         ray_mask_1 = torch.max(sample_mask_tensor, dim=-1)[0] > 0 # B* R
+
         R_valid = torch.sum(ray_mask_1.to(torch.int32)).item()
         
         sample_loc_tensor = torch.zeros([R_valid, max_shading_points_per_ray, 3], dtype=raypos.dtype, device=device)
