@@ -11,8 +11,9 @@ Given a set of points, a voxel grid is constructed. This voxel grid can be used 
 Differences to the PointNeRF implementation:
 - standalone
 - implemented as a PyTorch extension instead of using pycuda, directly working on `torch.Tensor` objects
-- Thus, has a clean Python interface
+- thus, has a clean Python interface
 - has batch support
+- sparse ray structure supporting different numbers of valid rays for examples in a batch
 
 ## Installation
 
