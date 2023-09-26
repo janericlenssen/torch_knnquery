@@ -1,6 +1,6 @@
 # Voxel grid k-nearest-neighbor ray sampling in PyTorch
 
-This is a Pytorch extension for CUDA voxel grid datastructure for k-nearest-neighbor point queries used in our work 
+This is a Pytorch extension providing a CUDA voxel grid datastructure for k-nearest-neighbor point queries used in our work 
 Christopher Wewer, Eddy Ilg, Bernt Schiele, Jan Eric Lenssen: [SimNP: Learning Self-Similarity between Neural Points](https://geometric-rl.mpi-inf.mpg.de/simnp/), ICCV 2023.
 
 
