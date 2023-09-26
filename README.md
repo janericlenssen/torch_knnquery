@@ -1,17 +1,18 @@
 # Voxel grid k-nearest-neighbor ray sampling in PyTorch
 
-This is an inoffical implementation of the voxel grid datastructure for k-nearest-neighbor ray queries presented in [Xu et al. Point-NeRF: Point-based Neural Radiance Fields](https://arxiv.org/abs/2201.08845).
+This is a Pytorch extension for CUDA voxel grid datastructure for k-nearest-neighbor point queries used in our work 
+Christopher Wewer, Eddy Ilg, Bernt Schiele, Jan Eric Lenssen: [SimNP: Learning Self-Similarity between Neural Points](https://geometric-rl.mpi-inf.mpg.de/simnp/), ICCV 2023.
 
-Based on the implementation given in (https://github.com/Xharlie/pointnerf).
+
+Based on the kernels from [Xu et al. Point-NeRF: Point-based Neural Radiance Fields](https://github.com/Xharlie/pointnerf).
 
 Given a set of points, a voxel grid is constructed. This voxel grid can be used to efficiently obtain k-NN points for samples along rays, shot through the scene. Implementation is CUDA only.
 
 Differences to the original implementation:
 - standalone
 - implemented as a PyTorch extension instead of using pycuda, directly working on `torch.Tensor` objects
-- clean interface
+- Thus, has a clean Python interface
 - has batch support
-- some bugfixes
 
 ## Installation
 
