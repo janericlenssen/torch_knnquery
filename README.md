@@ -8,7 +8,7 @@ Based on the kernels from [Xu et al. Point-NeRF: Point-based Neural Radiance Fie
 
 Given a set of points, a voxel grid is constructed. This voxel grid can be used to efficiently obtain k-NN points for samples along rays, shot through the scene. Implementation is CUDA only.
 
-Differences to the original implementation:
+Differences to the PointNeRF implementation:
 - standalone
 - implemented as a PyTorch extension instead of using pycuda, directly working on `torch.Tensor` objects
 - Thus, has a clean Python interface
