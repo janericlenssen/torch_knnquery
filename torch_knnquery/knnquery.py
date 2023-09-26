@@ -63,6 +63,8 @@ class VoxelGrid(object):
         #self.points = points.to(torch.float32)
         self.points = points
         min_xyz, max_xyz = torch.min(points.flatten(0,1), dim=0)[0], torch.max(points.flatten(0,1), dim=0)[0]
+        max_xyz += 0.001
+        min_xyz -= 0.001
 
         self.B, self.N = points.shape[0], points.shape[1]
         if self.ranges_original is not None:
@@ -71,7 +73,6 @@ class VoxelGrid(object):
 
         min_xyz = min_xyz - self.scaled_vsize * self.kernel_size / 2
         max_xyz = max_xyz + self.scaled_vsize * self.kernel_size / 2
-
         self.ranges = torch.cat([min_xyz, max_xyz], dim=-1).float()
         # print("ranges_np",ranges_np)
         vdim_np = (max_xyz - min_xyz) / self.vsize
